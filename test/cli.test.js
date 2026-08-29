@@ -1,24 +1,14 @@
-/* ==========================================================================
-   Tests for the things that broke.
-
-   package.json carried `node --test test/*.test.js` while the test folder did
-   not exist — that is, the run printed "tests 0, fail 0" and could never fail.
-   What is checked here is exactly what the audit found broken before the first
-   publish: flag parsing, writes stepping outside the folder when skill files
-   are laid down, a live key in a file VS Code offers to commit, and the client
-   aliases the storefront prints.
-
-   The tests do not go into the tarball (see "files" in package.json) — they
-   are for whoever works on the tool, not for whoever installs it.
-   ========================================================================== */
+/* Tests for the CLI's flag parsing and for the write-safety invariants around
+   client configs and skill folders. Not shipped in the published tarball. */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import {
   clientOf, entryFor, ensureInputs, insideDir, realInside, safeFolder, skillDirFor,
-  scrubLiteralKey, checkedUrl, atPath, readClientFile, CLIENTS, VSCODE_INPUT, HOME,
+  scrubLiteralKey, checkedUrl, atPath, readClientFile, writeClientFile, safeEntryKey,
+  CLIENTS, VSCODE_INPUT, HOME,
 } from '../lib/config.js'
 import { parse, boolFlag } from '../lib/args.js'
 
@@ -46,9 +36,7 @@ test('several servers stay positional', () => {
 })
 
 test('--version after a command takes its own value, not a server name', () => {
-  /* The listing page prints `add <id> --version 2.4.0`. While version was
-     boolean, "2.4.0" became a SECOND server name — add takes a list now — and
-     the command went off looking for a listing under that key. */
+  /* the storefront prints `add <id> --version 2.4.0`; boolean here reads "2.4.0" as a server */
   const a = parse(['add', 'x', '--version', '2.4.0', '--plan', 'free'])
   assert.deepEqual(a._, ['add', 'x'])
   assert.equal(a.flags.version, '2.4.0')
@@ -62,7 +50,6 @@ test('mcprush --version with no command stays boolean', () => {
 })
 
 test('every flag the storefront prints with a value is declared valued', () => {
-  /* otherwise the value slides into the positionals and becomes a listing name */
   for (const [argv, flag, value] of [
     [['add', 'x', '--scopes', 'read,network'], 'scopes', 'read,network'],
     [['skill', 'add', 'x', '--pack', 'desk'], 'pack', 'desk'],
@@ -75,9 +62,7 @@ test('every flag the storefront prints with a value is declared valued', () => {
 })
 
 test('a hostile folder in the marketplace answer does not carry the write outside', () => {
-  /* skills_dir arrives from /api/cli/clients, which is to say from outside. A
-     step upward in it carried off both the file writes and the recursive
-     delete. */
+  /* skills_dir comes from the marketplace, so a step upward would carry writes outside the folder */
   for (const evil of ['../../../../tmp/pwned/', '/etc/', '..', './../x', 'a/../../b', '~/x']) {
     const at = skillDirFor('cursor', 'demo', { dir: evil })
     assert.ok(at.dir.includes(join('.cursor', 'skills')),
@@ -166,8 +151,7 @@ test('the inputs section is appended once', () => {
 })
 
 test('a foreign address is not written into a client config', () => {
-  /* the address arrives in the marketplace answer and is put into a file next
-     to the REAL key: a foreign host in that field is the key, gone there */
+  /* the address comes from the marketplace answer and is written beside the real key */
   assert.ok(realInside ? true : true)
   assert.throws(() => entryFor('http', 'https://evil.example/gw/x/mcp', 'mk_live_secret'), /will not write/)
   assert.throws(() => entryFor('vscode', 'http://mcprush.com/gw/x/mcp', 'mk_live_secret'), /will not write/)
@@ -188,9 +172,7 @@ test('a key typed into .vscode/mcp.json by hand is swapped for the placeholder',
 })
 
 test('a boolean flag written as --json=false means false', () => {
-  /* `--flag=value` is allowed for any flag, while the readers did !!flags.json —
-     that is, the string "false" turned the flag on in exactly the place it was
-     being turned off */
+  /* `--flag=value` is allowed for any flag, so a !!flags.json reader would take "false" as true */
   assert.equal(boolFlag(parse(['x', '--json=false']).flags, 'json'), false)
   assert.equal(boolFlag(parse(['x', '--dry-run=0']).flags, 'dry-run'), false)
   assert.equal(boolFlag(parse(['x', '--global=no']).flags, 'global'), false)
@@ -200,9 +182,7 @@ test('a boolean flag written as --json=false means false', () => {
 })
 
 test('a production address is accepted while the host is a local one', () => {
-  /* the development server answers with production gateway addresses, because
-     it builds them from APP_URL: refusing those broke the repository's own
-     check-cli.mjs run and everybody working against localhost */
+  /* a dev server builds gateway addresses from APP_URL, so they are production ones */
   const was = process.env.MCPRUSH_HOST
   process.env.MCPRUSH_HOST = 'http://127.0.0.1:3000'
   assert.ok(checkedUrl('https://mcprush.com/gw/x/mcp'), 'the product domain is trusted')
@@ -213,9 +193,7 @@ test('a production address is accepted while the host is a local one', () => {
 })
 
 test('a skills folder has to end in skills, otherwise the built-in table is taken', () => {
-  /* `..` and absolute paths are not enough on their own: with --global the root
-     becomes HOME, and a marketplace naming `.ssh/` or `.git/hooks/` would be
-     writing inside those */
+  /* with --global the root is HOME, so a marketplace naming `.ssh/` would write inside it */
   for (const evil of ['.ssh', '.git/hooks', '.config/autostart', 'Library/LaunchAgents', 'node_modules', '.vscode']) {
     const at = skillDirFor('cursor', 'demo', { dir: evil, global: true })
     assert.ok(at.dir.endsWith(join('.cursor', 'skills', 'demo')),
@@ -233,8 +211,7 @@ test('a symlink at the root itself does not lead outside home', () => {
   symlinkSync(outside, join(home, '.cache'), 'dir')
   const was = process.env.HOME
   process.env.HOME = home
-  /* HOME is read by the module at import time, so we check what is visible:
-     a value out of the answer must not lead to a write outside the named root */
+  /* HOME is read at import time, so this checks the observable result instead */
   const at = skillDirFor('cursor', 'demo', { dir: '.cache/skills/', global: true })
   assert.ok(!at.dir.startsWith(outside), 'the write must not follow the symlink outside')
   if (was === undefined) delete process.env.HOME
@@ -243,9 +220,7 @@ test('a symlink at the root itself does not lead outside home', () => {
 })
 
 test('a list where an object belongs is refused, not written past', () => {
-  /* typeof [] is 'object', so the old check walked into the array and set a
-     named property on it — JSON.stringify drops those, and the tool reported
-     "entry added" over a file it had not changed */
+  /* typeof [] is 'object', and a property set on an array is dropped by JSON.stringify */
   assert.throws(() => atPath({ mcpServers: [] }, ['mcpServers']), /is a list/)
   assert.throws(() => atPath({ mcpServers: 'x' }, ['mcpServers']), /is a string/)
   assert.deepEqual(atPath({}, ['mcpServers']), {})
@@ -265,9 +240,7 @@ test('a config that parses but is not an object is refused', () => {
 })
 
 test('a symlink on the client folder itself does not lead outside', () => {
-  /* the whole assembled path was checked, but `.claude` is a directory of its
-     own that anybody could have made a link out of beforehand — and then both
-     the write and `skill remove`'s recursive delete followed it */
+  /* `.claude` may itself be a symlink, which the write and the recursive delete would follow */
   const box = mkdtempSync(join(tmpdir(), 'mcprush-seg-'))
   const home = join(box, 'home')
   const outside = join(box, 'outside')
@@ -280,9 +253,78 @@ test('a symlink on the client folder itself does not lead outside', () => {
   try {
     const at = skillDirFor('claude-code', 'demo', { global: true })
     landedOutside = at.dir.startsWith(outside)
-  } catch { /* a refusal is the other acceptable answer */ }
+  } catch { /* a refusal is also an acceptable answer */ }
   assert.equal(landedOutside, false, 'the write must not follow the link out')
   if (was === undefined) delete process.env.HOME
   else process.env.HOME = was
   rmSync(box, { recursive: true, force: true })
+})
+
+
+test('an entry key the marketplace chose cannot be a name that is not one', () => {
+  /* the id comes from the server and becomes an object key: it could replace a hand-written entry */
+  assert.equal(safeEntryKey('stripe-mcp'), 'stripe-mcp')
+  assert.equal(safeEntryKey('Weather.API_2'), 'Weather.API_2')
+  assert.equal(safeEntryKey(''), null)
+  assert.equal(safeEntryKey('a/b'), null)
+  assert.equal(safeEntryKey('../escape'), null)
+  assert.equal(safeEntryKey('has space'), null)
+  assert.equal(safeEntryKey('-leading-dash'), null)
+  assert.equal(safeEntryKey('x'.repeat(65)), null)
+  assert.equal(safeEntryKey(42), null)
+  assert.equal(safeEntryKey(null), null)
+})
+
+test('__proto__ as an entry key is refused rather than silently lost', () => {
+  /* these pass the character checks, but assigning to `__proto__` writes nothing */
+  assert.equal(safeEntryKey('__proto__'), null)
+  assert.equal(safeEntryKey('constructor'), null)
+  assert.equal(safeEntryKey('prototype'), null)
+})
+
+test('a symlink where the client config belongs is refused, and the target is untouched', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcprush-link-'))
+  const victim = join(dir, 'somebody-elses.json')
+  writeFileSync(victim, '{"keep":"this"}\n')
+  const link = join(dir, 'config.json')
+  symlinkSync(victim, link)
+  const client = { id: 'test', label: 'test', file: link, shape: 'mcpServers' }
+  assert.throws(() => writeClientFile(client, { mcpServers: {} }), /link/i)
+  assert.equal(JSON.parse(readFileSync(victim, 'utf8')).keep, 'this')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('a symlink where the backup belongs is refused too', () => {
+  /* the backup is a copy of the same config, key included */
+  const dir = mkdtempSync(join(tmpdir(), 'mcprush-bak-'))
+  const victim = join(dir, 'elsewhere.json')
+  writeFileSync(victim, '{"keep":"this"}\n')
+  const file = join(dir, 'config.json')
+  writeFileSync(file, '{"mcpServers":{}}\n')
+  symlinkSync(victim, file + '.bak')
+  const client = { id: 'test', label: 'test', file, shape: 'mcpServers' }
+  assert.throws(() => writeClientFile(client, { mcpServers: {} }), /link/i)
+  assert.equal(JSON.parse(readFileSync(victim, 'utf8')).keep, 'this')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('a written config leaves no half-file and no temporary beside it', () => {
+  /* truncate-and-write could leave a config no client can parse */
+  const dir = mkdtempSync(join(tmpdir(), 'mcprush-atomic-'))
+  const file = join(dir, 'config.json')
+  const client = { id: 'test', label: 'test', file, shape: 'mcpServers' }
+  writeClientFile(client, { mcpServers: { 'a-mcp': { url: 'https://mcprush.com/gw/a/mcp' } } })
+  const parsed = JSON.parse(readFileSync(file, 'utf8'))
+  assert.ok(parsed.mcpServers['a-mcp'])
+  assert.deepEqual(readdirSync(dir).filter((f) => f.includes('.tmp-')), [])
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('a host carrying a username and password keeps neither', () => {
+  /* otherwise the credentials are written in plain text into a client config */
+  const u = checkedUrl('https://someone:secret@mcprush.com/gw/x/mcp')
+  assert.ok(u)
+  assert.ok(!String(u).includes('secret'))
+  assert.ok(!String(u).includes('someone'))
+  assert.ok(String(u).startsWith('https://mcprush.com/'))
 })

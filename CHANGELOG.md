@@ -59,9 +59,49 @@ that tried to disprove each of them.
 - `--json` carries the ignored flags (`--plan`, `--version`, `--scopes`) that
   the human output already mentioned.
 
+### Security
+
+A second pass, deliberately hostile: 141 attacks against a tool that trusts
+its marketplace, its disk and its own arguments rather less than it did.
+Fifteen landed and are fixed here; fifteen more were raised and thrown out
+under a second look rather than written up as wins.
+
+- **The marketplace chose the key an entry was written under.** The id came
+  back in the answer and went in as an object key unchecked, so a hostile —
+  or merely confused — answer naming `github` replaced an entry somebody had
+  added by hand, with their own address and their own token in it. Keys are
+  now a bounded character set, and `__proto__`, `constructor` and `prototype`
+  are refused: the first of those was worse than an overwrite, because
+  assigning to it wrote nothing at all while the tool printed a tick, recorded
+  the install against the account and returned `ok: true`.
+- **A symlink where a client config belongs was followed.** `~/.claude.json`
+  replaced by a link — or the `.bak` beside it, which is checked separately
+  now — carried the write, and the live key in it, into somebody else's file.
+  Both are refused, and the file they point at is left as it was.
+- **The write was not atomic.** Open, truncate, write: two commands at once,
+  or a signal in the middle, left a config no client can parse, with the key
+  in the half that never arrived. It is a temporary file and a rename now.
+- **Nothing bounded a request.** Against a host that accepts the connection
+  and then says nothing, a command hung until it was killed; against one that
+  keeps sending, `res.text()` buffered the answer until the process died.
+  Thirty seconds and eight megabytes, both with a sentence saying what
+  happened and that nothing was written.
+- **Escape sequences from the marketplace reached the terminal on the success
+  path.** They were stripped from refusals in 0.1.2's earlier round and not
+  from anything else, so the answer to a successful install could still
+  recolour the output, erase what was above it and forge a tick.
+- **A host carrying credentials was accepted** — `https://user:pass@…` was
+  checked, kept, and written into a client config in plain text. Both halves
+  are dropped before the address is used.
+- `SECURITY.md` and `CHANGELOG.md` now travel in the package: the file that
+  says how to report a vulnerability was not in the tarball anybody installs.
+- The release workflow passes the tag through the environment rather than
+  interpolating it into the shell.
+
 ### Added
 
-- Three more tests, on the failures above: 25 in total.
+- Nine more tests, on the failures above and the guards behind them: 31 in
+  total.
 
 ## [0.1.0] — 2026-08-26
 

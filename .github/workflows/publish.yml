@@ -54,11 +54,18 @@ jobs:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
+      # THE TAG ARRIVES AS AN ENVIRONMENT VARIABLE, NOT AS TEXT PASTED INTO THE
+      # SHELL. `${{ … }}` is substituted before bash sees the line, so a tag
+      # carrying a quote and a semicolon becomes a command rather than a
+      # string. Only the owner can create a release here, so nothing was ever
+      # at stake — but it is the exact shape that gets other people's
+      # pipelines, and an env var costs nothing.
       - name: the release tag and package.json name one version
         if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          TAG="${{ github.event.release.tag_name }}"
-          TAG="${TAG#v}"
+          TAG="${RELEASE_TAG#v}"
           PKG=$(node -p "require('./package.json').version")
           echo "release $TAG · package.json $PKG"
           test "$TAG" = "$PKG"
