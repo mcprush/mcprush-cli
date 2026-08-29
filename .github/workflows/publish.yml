@@ -1,0 +1,52 @@
+# Publish to npm on a tag, with provenance.
+#
+# WHY FROM CI RATHER THAN A LAPTOP. npm grants the "Provenance" badge only to
+# a package built in an environment it can verify and signed through OIDC: the
+# package page then shows which commit and which run produced it. No flag can
+# get that from a laptop.
+#
+# ONE-TIME SETUP, before this works:
+#   1. On npm: Access → Trusted publishers → add this repository and the
+#      workflow file name (publish.yml). With that in place no NPM_TOKEN
+#      secret is needed at all.
+#      If a trusted publisher does not suit you: Settings → Secrets →
+#      NPM_TOKEN (a granular token with publish rights on mcprush), and
+#      uncomment the NODE_AUTH_TOKEN line below.
+#   2. Nothing else — the id-token permission this needs is granted below.
+#
+# TO RELEASE: `npm version patch`, then `git push --follow-tags`. The tag has
+# to name the same version as package.json; the step below checks it and stops
+# if they disagree, because a package carrying one number in the registry and
+# another in the history cannot be matched to anything afterwards.
+name: publish
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: the tag and package.json name one version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          echo "tag $TAG · package.json $PKG"
+          test "$TAG" = "$PKG"
+
+      - run: npm test
+
+      - run: npm publish --provenance --access public
+        # env:
+        #   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,0 +1,41 @@
+{
+  "name": "mcprush",
+  "version": "0.1.0",
+  "description": "Install MCP servers and agent skills from mcprush.com into the client you already use, through one gateway and one key.",
+  "type": "module",
+  "bin": {
+    "mcprush": "./bin/mcprush.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "author": "mcprush.com <support@mcprush.com>",
+  "homepage": "https://mcprush.com/cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mcprush/mcprush-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mcprush/mcprush-cli/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "agent-skills",
+    "claude",
+    "cursor",
+    "agents",
+    "cli"
+  ],
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  }
+}
