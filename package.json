@@ -1,6 +1,6 @@
 {
   "name": "mcprush",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Install MCP servers and agent skills from mcprush.com into the client you already use, through one gateway and one key.",
   "type": "module",
   "bin": {

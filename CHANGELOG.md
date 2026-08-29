@@ -4,6 +4,65 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions
 follow [semver](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] — 2026-08-29
+
+Found by running the published package — not the working copy — through 414
+scenarios against a marketplace built to answer like the real one, including
+answers a hostile one would give. Fifty-four findings survived a second pass
+that tried to disprove each of them.
+
+### Fixed
+
+- **`stack add` crashed instead of refusing a foreign address.** The one guard
+  that stops the tool writing an address at a host nobody named called
+  `plural()`, a function that does not exist: `ReferenceError` where the
+  refusal should have been, with the address never named.
+- **`add` reported success over a file it had not changed.** `typeof []` is
+  `object`, so a config with `mcpServers: []` passed the check, the entry was
+  set as a named property on an array, `JSON.stringify` dropped it — and the
+  tool printed a tick, recorded the install against the account and returned
+  `ok: true`. A list, a string or a number where an object belongs is now a
+  refusal.
+- **A symlink on the client folder itself escaped.** Paths were checked as
+  assembled, but `.claude` is a directory somebody could have replaced with a
+  link beforehand — and then both the write and `skill remove`'s recursive
+  delete followed it out. Every segment is now resolved as it is walked.
+- **`login` saved a key it had not checked**, printing `✓ undefined ·
+  undefined` when the marketplace answered a parseable but empty 200. The
+  check the comment promised — and that `whoami` already had — was missing.
+- **`login` pinned the host forever.** `MCPRUSH_HOST`, set for one run, was
+  written into the config and silently redirected every later command. Only
+  `--host` is remembered now, and it says so.
+- **`--host=` with an empty value** slipped past the "this flag needs a value"
+  guard and sent the tool back to mcprush.com — the flag that points it
+  elsewhere quietly doing the opposite. That guard also referenced `JSONOUT`
+  before it was declared, so it threw instead of printing.
+- **`add-list` installed deprecated listings**, dropped the environment
+  variables a server needs, filed real errors under "skipped", and reported a
+  security refusal as success with exit 0.
+- **`stack add` and `add-list` went to the network before reading the config**,
+  so an unparseable file left installs recorded on the account and nothing
+  written anywhere.
+- **`remove` printed its refusal to stdout** while stderr stayed empty.
+- **`skill add` with several names** printed one JSON document per skill, and
+  a dry run ended in the same green ticks a real install uses.
+- **`budget` taught the wrong quoting.** Its own hint printed
+  `--max "$900/mo"` — double quotes, where the shell eats `$9` — which the
+  README explicitly warns against. `--alert` accepted any finite number,
+  negatives included.
+- **Refusal text from the marketplace reached the terminal byte for byte**,
+  escape sequences and all. It is somebody else's string on your screen; the
+  control characters are stripped now.
+- Clients this tool cannot write are named out loud by `stack add` and
+  `add-list`, with the header to paste — the installs used to land on the
+  account with nothing said.
+- `--json` carries the ignored flags (`--plan`, `--version`, `--scopes`) that
+  the human output already mentioned.
+
+### Added
+
+- Three more tests, on the failures above: 25 in total.
+
 ## [0.1.0] — 2026-08-26
 
 First public release. What the tool does is in the README; what follows is

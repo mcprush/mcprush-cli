@@ -81,15 +81,30 @@ const args = parse(process.argv.slice(2))
    line parses as `true`, and every consumer then tested `typeof … ===
    'string'` — that is, silently installed into claude-code for somebody who
    plainly named a different client. An error is cheaper than a surprise. */
+/* THE ORDER HERE MATTERS, AND IT WAS WRONG. The "a flag needs a value" check
+   stood ABOVE the declaration of JSONOUT and referred to it — that is, it
+   threw a ReferenceError of its own instead of printing its message. The
+   output format is settled first, then the flags are checked, and only then
+   is the address taken: an empty --host must not reach the environment. */
+const JSONOUT = boolFlag(args.flags, 'json')
+const DRY = boolFlag(args.flags, 'dry-run')
+
 for (const flag of ['client', 'host', 'key', 'max', 'alert', 'plan', 'scopes', 'pack', 'track']) {
-  if (args.flags[flag] === true) {
-    console.error(`\`--${flag}\` needs a value: --${flag} <value>`)
+  /* AN EMPTY STRING IS A MISSING VALUE TOO. `--host=` slipped past this check
+     (there is a value, and it is empty) and sent the tool back to
+     mcprush.com — that is, the very flag somebody uses to point it at their
+     own server quietly did the opposite. The same with `--client=`: the
+     install was written to the account under an empty client name, and
+     success was reported. */
+  const v = args.flags[flag]
+  if (v === true || (typeof v === 'string' && !v.trim())) {
+    const line = `\`--${flag}\` needs a value: --${flag} <value>`
+    if (JSONOUT) console.log(JSON.stringify({ ok: false, error: line }, null, 2))
+    else console.error(line)
     process.exit(1)
   }
 }
 if (typeof args.flags.host === 'string') process.env.MCPRUSH_HOST = args.flags.host
-const JSONOUT = boolFlag(args.flags, 'json')
-const DRY = boolFlag(args.flags, 'dry-run')
 
 const emit = (obj, human) => {
   if (JSONOUT) say(JSON.stringify(obj, null, 2))
@@ -111,13 +126,49 @@ async function login() {
   }
   if (!given) throw new Refused('No key given.')
 
-  /* checked before it is stored, so a typo is caught while somebody is still
-     looking at the terminal rather than on their first install */
-  const me = await api.whoami(given)
-  writeConfig({ ...readConfig(), host: host(), key: given })
-  emit({ ok: true, account: me.email, plan: me.plan, config: CONFIG_FILE }, () => {
-    say(green('✓') + ` ${me.email} · ${me.plan}`)
+  /* CHECKED BEFORE IT IS SAVED — AND CHECKED IN EARNEST.
+
+     The comment promised a check and there was none: the marketplace's answer
+     was not looked at at all, so a 200 that parsed but was empty saved the
+     key and printed "✓ undefined · undefined". That same shape check already
+     stands in whoami below, with the same explanation — here it was simply
+     forgotten. */
+  const me = await api.whoami(given.trim())
+  if (!me || typeof me.email !== 'string' || !me.key) {
+    throw new Refused(
+      `${host()} answered without an account on it, so the key was not saved. It may be revoked, or something `
+      + 'in front of the marketplace rewrote the answer.')
+  }
+
+  /* ==========================================================================
+     THE ADDRESS IS REMEMBERED ONLY IF IT WAS NAMED ON PURPOSE.
+
+     `host()` was written here — that is, a value of MCPRUSH_HOST that
+     happened to be in the environment for the length of one login settled
+     into the config for good, and the commands after it went there with no
+     variable set at all. Not a word in the output, and no command to undo it,
+     while the README promises "default: mcprush.com" and "Nothing else is
+     stored".
+
+     Now only an address named by the `--host` flag is remembered. The
+     environment variable stays what it always was: a setting for one run. */
+  const pinned = typeof args.flags.host === 'string' && args.flags.host.trim()
+    ? host()
+    : (readConfig().host || undefined)
+  const conf = { ...readConfig(), key: given.trim() }
+  if (pinned) conf.host = pinned
+  else delete conf.host
+  writeConfig(conf)
+  emit({ ok: true, account: me.email, plan: me.plan, config: CONFIG_FILE, host: pinned || null }, () => {
+    say(green('✓') + ` ${me.email} · ${me.plan ?? 'no plan'}`)
     say(dim(`  key saved in ${CONFIG_FILE}, readable only by you`))
+    if (pinned) say(dim(`  and this machine will talk to ${pinned} until you log in again`))
+    /* THE ENVIRONMENT OVERRIDES WHAT WAS SAVED, and that cannot be passed
+       over in silence: the person saved one key, and the tool will work with
+       another. */
+    if (process.env.MCPRUSH_KEY && process.env.MCPRUSH_KEY !== given.trim()) {
+      say(dim('  note: MCPRUSH_KEY is set in this shell and takes precedence over the key just saved'))
+    }
     if (me.suspended) say(red('  this account is suspended — installs and calls are closed'))
   })
 }
@@ -365,6 +416,16 @@ async function add() {
      we write, and the old line still travels into git */
   const swapped = scrubLiteralKey(client, data, key())
   const file = done.length || swapped ? writeClientFile(client, ensureInputs(client, data)) : null
+  /* IGNORED FLAGS ARE VISIBLE IN THE JSON TOO. The human output names them
+     deliberately, while the machine-readable one carried no trace of them: a
+     script got ok:true and went away sure that --plan or --version had meant
+     something. */
+  const ignoredFlags = []
+  if (planAsked) ignoredFlags.push({ flag: 'plan', value: planAsked, why: 'a plan is chosen at checkout' })
+  if (versionAsked) ignoredFlags.push({ flag: 'version', value: versionAsked, why: 'an install follows the release the publisher serves' })
+  for (const f of ['scopes', 'pack', 'track']) {
+    if (typeof args.flags[f] === 'string') ignoredFlags.push({ flag: f, value: args.flags[f], why: 'this tool has no such setting' })
+  }
   emit({
     ok: !failed.length,
     /* one name — the old shape of the reply, word for word: scripts read it,
@@ -376,6 +437,7 @@ async function add() {
     wrote: file,
     installed: done,
     failed,
+    ...(ignoredFlags.length ? { ignored: ignoredFlags } : {}),
   }, () => {
     for (const d of done) {
       say(green('✓') + ` ${bold(d.name)} → ${client.name}`)
@@ -449,6 +511,12 @@ async function stack() {
       + 'installs its free members. Open the stack page to read the list first.',
       { where: host() + '/stack/' + encodeURIComponent(name) })
   }
+  /* THE CONFIG IS READ BEFORE THE NETWORK. Otherwise, with an unreadable
+     file, the stack manages to record the installs on the account and only
+     then says there is nowhere to write them. */
+  let data = null
+  if (client) data = readClientFile(client)
+
   const res = await api.stack(name, clientId)
 
   /* EVERY ADDRESS BEFORE ANY ENTRY. entryFor() refuses an address at a host
@@ -458,13 +526,12 @@ async function stack() {
   const wrongHost = (res.added || []).filter((a) => !checkedUrl(a.url))
   if (wrongHost.length) {
     throw new Refused(
-      `${res.name || name} resolves to ${plural(wrongHost.length, 'address')} this tool will not write into `
+      `${res.name || name} resolves to ${wrongHost.length} address${wrongHost.length === 1 ? '' : 'es'} this tool will not write into `
       + `a config — the first is \`${wrongHost[0].url}\`. Nothing was written to ${client ? client.name : clientId}. `
       + `The install is on your account; take it off in your dashboard if this was not you.`)
   }
   let wrote = null
   if (client && res.added.length && !DRY) {
-    const data = readClientFile(client)
     const bucket = atPath(data, client.at)
     for (const a of res.added) bucket[a.id] = entryFor(client.shape, a.url, key())
     scrubLiteralKey(client, data, key())
@@ -473,8 +540,15 @@ async function stack() {
     wrote = writeClientFile(client, ensureInputs(client, data))
   }
 
-  emit({ ok: true, stack: name, added: res.added, skipped: res.skipped, wrote }, () => {
+  emit({ ok: true, stack: name, added: res.added, skipped: res.skipped, wrote, client: clientId }, () => {
     say(green('✓') + ` ${bold(res.name || name)} — ${res.added.length} installed`)
+    /* A CLIENT WE DO NOT WRITE HAS TO BE NAMED. The installs went onto the
+       account, nobody touched a config, and not a word was said about it —
+       the person left sure that everything was set up. */
+    if (!client) {
+      say(dim(`  ${clientId} is set up by hand — nothing was written to a config`))
+      say(dim(`  each address above goes with: Authorization: Bearer ${key()}`))
+    }
     for (const a of res.added) say(dim('  + ' + a.id))
     for (const sk of res.skipped) say(dim(`  · ${sk.id} — ${sk.why}`))
     if (wrote) say(dim(`  ${wrote}`))
@@ -491,48 +565,87 @@ async function addList() {
   const found = await api.listAdd(name, clientId)
   const client = clientOf(clientId)
 
+  /* THE CLIENT'S FILE IS READ BEFORE THE NETWORK, NOT AFTER.
+
+     It was read at the very end — that is, with an unreadable config the tool
+     managed to go to the network and record the installs on the account, and
+     only then said there was nowhere to write. The person was left with
+     installs they had not asked for, and no entries in their client. */
+  let data = null
+  if (client && !DRY) data = readClientFile(client)
+
   const added = []
   const skipped = []
+  const failed = []
   for (const listingId of found.items) {
     try {
       const listing = await api.listing(listingId)
+      /* SOMETHING TAKEN OFF THE STOREFRONT IS NOT INSTALLED EITHER. There was
+         no status check here at all, though a single `add` makes one: a list
+         installed a deprecated server without a word. */
+      if (listing.status !== 'live') {
+        skipped.push({ id: listingId, why: listing.status })
+        continue
+      }
       if (listing.kind !== 'server' || listing.local || !listing.free || !listing.ready) {
         skipped.push({ id: listingId, why: listing.kind === 'skill' ? 'a skill' : listing.free ? 'not routable' : 'paid' })
         continue
       }
+      /* A REFUSAL ON SAFETY GROUNDS IS NOT A "SKIP". It went into the same
+         basket as the ordinary "paid" and "a skill", and the command ended
+         with a green tick and exit code 0: the one sign that the marketplace
+         had named somebody else's address sank among the routine lines. */
       if (!checkedUrl(listing.url)) {
-        skipped.push({ id: listingId, why: 'resolves to an address this tool will not write' })
+        failed.push({ id: listingId, why: `resolves to ${listing.url}, which this tool will not write into a config` })
         continue
       }
-      if (!DRY) await api.install(listingId, clientId)
-      added.push({ id: listingId, url: listing.url })
+      let installed = null
+      if (!DRY) installed = await api.install(listingId, clientId)
+      added.push({ id: listingId, url: listing.url, variables: (installed && installed.variables) || null })
     } catch (err) {
-      skipped.push({ id: listingId, why: err.message.slice(0, 60) })
+      /* A REAL ERROR IS NOT A "SKIP" EITHER. */
+      failed.push({ id: listingId, why: err.message.slice(0, 80) })
     }
   }
   let wrote = null
   if (client && added.length && !DRY) {
-    const data = readClientFile(client)
     const bucket = atPath(data, client.at)
     for (const a of added) bucket[a.id] = entryFor(client.shape, a.url, key())
     scrubLiteralKey(client, data, key())
     wrote = writeClientFile(client, ensureInputs(client, data))
   }
   if (DRY) {
-    emit({ dryRun: true, list: found.list, would: added, skipped, file: client ? client.file : null }, () => {
+    emit({ dryRun: true, list: found.list, would: added, skipped, failed, file: client ? client.file : null }, () => {
       say(dim('nothing was written — this is what would be:'))
       if (client) say(`  ${client.file}`)
       for (const a of added) say(`  ${a.id} → ${a.url}`)
       for (const sk of skipped) say(dim(`  · ${sk.id} — ${sk.why}`))
+      for (const f of failed) console.error(red('•') + ` ${f.id} — ${f.why}`)
     })
+    if (failed.length) process.exitCode = 1
     return
   }
-  emit({ ok: true, list: found.list, added, skipped, wrote }, () => {
+  emit({ ok: !failed.length, list: found.list, added, skipped, failed, wrote, client: clientId }, () => {
     say(green('✓') + ` ${bold(found.name)} — ${added.length} installed`)
-    for (const a of added) say(dim('  + ' + a.id))
+    if (!client && added.length) {
+      say(dim(`  ${clientId} is set up by hand — nothing was written to a config`))
+      say(dim(`  each address below goes with: Authorization: Bearer ${key()}`))
+    }
+    for (const a of added) {
+      say(dim('  + ' + a.id))
+      /* THE ENVIRONMENT VARIABLES ARE NOT LOST HERE EITHER. A single `add`
+         names them, while a list threw them away: the server was installed in
+         silence and then did not answer. */
+      if (a.variables && a.variables.needed && a.variables.needed.length) {
+        for (const v of a.variables.needed) say(`      set ${v.key}${v.about ? dim(' — ' + v.about) : ''}`)
+        if (a.variables.where) say(dim(`      ${a.variables.where}`))
+      }
+    }
     for (const sk of skipped) say(dim(`  · ${sk.id} — ${sk.why}`))
+    for (const f of failed) console.error(red('•') + ` ${f.id} — ${f.why}`)
     if (wrote) say(dim(`  ${wrote}`))
   })
+  if (failed.length) process.exitCode = 1
 }
 
 /* ---- the ceiling on what this account can spend -------------------------- */
@@ -565,9 +678,23 @@ async function budget() {
     return
   }
   const maxCents = wantMax === undefined ? undefined : parseMoney(wantMax)
-  if (wantMax !== undefined && maxCents === null) throw new Refused(`\`${wantMax}\` is not an amount. Try --max "$900/mo".`)
+  if (wantMax !== undefined && maxCents === null) {
+    /* THE HINT TAUGHT EXACTLY WHAT HAD BROKEN THE COMMAND. It printed
+       `Try --max "$900/mo"` — in DOUBLE quotes, where the shell eats $9 and
+       puts nothing in its place; the README says the opposite. And there is
+       no sense in showing the rejected value back: what reaches us is already
+       mangled by the shell, and in zsh it is an empty string. */
+    throw new Refused(
+      'That is not an amount this tool can read. Write it in single quotes so the shell leaves it alone: '
+      + "--max '$900/mo' — or without the sign at all: --max 900.")
+  }
   const alertPct = wantAlert === undefined ? undefined : Number(String(wantAlert).replace('%', ''))
-  if (wantAlert !== undefined && !Number.isFinite(alertPct)) throw new Refused('--alert takes a percentage, as in 80%.')
+  /* A PERCENTAGE RUNS FROM ZERO TO A HUNDRED. Any finite number was accepted,
+     a negative one included, and confirmed with a tick: a threshold nobody
+     will ever be warned at looked as though it had been set. */
+  if (wantAlert !== undefined && (!Number.isFinite(alertPct) || alertPct < 1 || alertPct > 100)) {
+    throw new Refused('--alert takes a percentage between 1 and 100, as in 80%.')
+  }
 
   /* A DRY RUN ALSO ANSWERS IN THE FORMAT THAT WAS ASKED FOR. This branch
      printed human text around emit(), so `--json --dry-run` handed back
@@ -618,10 +745,15 @@ async function remove() {
       /* the config entry is already gone; saying the whole thing failed would
          be wrong, and saying nothing would leave the install billing */
       if (!(err instanceof Refused)) throw err
+      /* A PARTIAL SUCCESS IS STILL A REFUSAL, AND IT BELONGS ON STDERR. The
+         entry came out of the config while the install stayed on the account:
+         the line saying so went to stdout together with the green tick, so a
+         script reading the output saw success, and stderr was empty with an
+         exit code of 1. */
       emit({ ok: false, removedFrom, error: err.message }, () => {
         if (removedFrom) say(green('✓') + ` taken out of ${client.name} (${removedFrom})`)
-        say(red('•') + ' ' + err.message)
-        if (err.where) say(dim('  ' + err.where))
+        console.error(red('•') + ' ' + err.message)
+        if (err.where) console.error(dim('  ' + err.where))
       })
       process.exitCode = 1
       return
@@ -691,9 +823,17 @@ async function skill() {
       }
     }
     const bad = results.filter((r) => !r.ok)
-    emit({ ok: !bad.length, skills: results }, () => {
+    /* A DRY RUN DOES NOT DRAW THE TICK OF AN INSTALL. A list of skills with
+       --dry-run ended in the same green "✓ a-skill" that marks a real write
+       to disk — that is, the sign of success stood where nothing had
+       happened. And with --json the DRY branch inside printed its own
+       document per skill: three objects in a row instead of one. */
+    emit({ ...(DRY ? { dryRun: true } : { ok: !bad.length }), skills: results }, () => {
+      if (DRY) say(dim('nothing was written — this is what would be:'))
       for (const r of results) {
-        if (r.ok) say(green('✓') + ` ${bold(r.name || r.id)}${r.dir ? dim(' → ' + r.dir) : ''}`)
+        if (!r.ok) continue
+        if (DRY) say(`  ${r.name || r.id}${r.dir ? ' → ' + r.dir : ''}`)
+        else say(green('✓') + ` ${bold(r.name || r.id)}${r.dir ? dim(' → ' + r.dir) : ''}`)
       }
       for (const r of bad) console.error(red('•') + ` ${r.id} — ${r.error}`)
     })
@@ -739,7 +879,11 @@ async function skillOne(verb, name, opts = {}) {
     if (!existsSync(where.dir) || !existsSync(join(where.dir, 'SKILL.md'))) {
       throw new Refused(`There is no ${listing.name} folder at ${where.dir}.`)
     }
-    if (DRY) { emit({ dryRun: true, dir: where.dir }, () => say(dim(`nothing was deleted — this would go: ${where.dir}`))); return }
+    if (DRY) {
+      if (quiet) return { id: listing.id, name: listing.name, dir: where.dir, wouldDelete: true }
+      emit({ dryRun: true, dir: where.dir }, () => say(dim(`nothing was deleted — this would go: ${where.dir}`)))
+      return
+    }
     /* A RECURSIVE DELETE IS THE LAST PLACE WHERE A STRING CAN BE TRUSTED. The
        root of the folder comes out of the marketplace response, and a symlink
        can lead it astray too; check the real path before rmSync, not after. */
@@ -760,6 +904,7 @@ async function skillOne(verb, name, opts = {}) {
   if (!listed.files?.length) throw new Refused(`${listing.name} has no files with us to write.`)
 
   if (DRY) {
+    if (quiet) return { id: listing.id, name: listing.name, dir: where.dir, files: listed.files.map((f) => f.path) }
     emit({ dryRun: true, dir: where.dir, files: listed.files }, () => {
       say(dim('nothing was written — this is what would be:'))
       say(`  ${where.dir}`)

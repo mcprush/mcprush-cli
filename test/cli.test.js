@@ -14,11 +14,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import {
   clientOf, entryFor, ensureInputs, insideDir, realInside, safeFolder, skillDirFor,
-  scrubLiteralKey, checkedUrl, CLIENTS, VSCODE_INPUT, HOME,
+  scrubLiteralKey, checkedUrl, atPath, readClientFile, CLIENTS, VSCODE_INPUT, HOME,
 } from '../lib/config.js'
 import { parse, boolFlag } from '../lib/args.js'
 
@@ -237,6 +237,51 @@ test('a symlink at the root itself does not lead outside home', () => {
      a value out of the answer must not lead to a write outside the named root */
   const at = skillDirFor('cursor', 'demo', { dir: '.cache/skills/', global: true })
   assert.ok(!at.dir.startsWith(outside), 'the write must not follow the symlink outside')
+  if (was === undefined) delete process.env.HOME
+  else process.env.HOME = was
+  rmSync(box, { recursive: true, force: true })
+})
+
+test('a list where an object belongs is refused, not written past', () => {
+  /* typeof [] is 'object', so the old check walked into the array and set a
+     named property on it — JSON.stringify drops those, and the tool reported
+     "entry added" over a file it had not changed */
+  assert.throws(() => atPath({ mcpServers: [] }, ['mcpServers']), /is a list/)
+  assert.throws(() => atPath({ mcpServers: 'x' }, ['mcpServers']), /is a string/)
+  assert.deepEqual(atPath({}, ['mcpServers']), {})
+  assert.deepEqual(atPath({ mcpServers: { a: 1 } }, ['mcpServers']), { a: 1 })
+})
+
+test('a config that parses but is not an object is refused', () => {
+  const box = mkdtempSync(join(tmpdir(), 'mcprush-cfg-'))
+  const client = { ...CLIENTS['claude-code'], file: join(box, 'c.json') }
+  writeFileSync(client.file, '[]')
+  assert.throws(() => readClientFile(client), /not a settings object/)
+  writeFileSync(client.file, '"just a string"')
+  assert.throws(() => readClientFile(client), /not a settings object/)
+  writeFileSync(client.file, '{"mcpServers":{}}')
+  assert.deepEqual(readClientFile(client), { mcpServers: {} })
+  rmSync(box, { recursive: true, force: true })
+})
+
+test('a symlink on the client folder itself does not lead outside', () => {
+  /* the whole assembled path was checked, but `.claude` is a directory of its
+     own that anybody could have made a link out of beforehand — and then both
+     the write and `skill remove`'s recursive delete followed it */
+  const box = mkdtempSync(join(tmpdir(), 'mcprush-seg-'))
+  const home = join(box, 'home')
+  const outside = join(box, 'outside')
+  mkdirSync(home, { recursive: true })
+  mkdirSync(outside, { recursive: true })
+  symlinkSync(outside, join(home, '.claude'), 'dir')
+  const was = process.env.HOME
+  process.env.HOME = home
+  let landedOutside = false
+  try {
+    const at = skillDirFor('claude-code', 'demo', { global: true })
+    landedOutside = at.dir.startsWith(outside)
+  } catch { /* a refusal is the other acceptable answer */ }
+  assert.equal(landedOutside, false, 'the write must not follow the link out')
   if (was === undefined) delete process.env.HOME
   else process.env.HOME = was
   rmSync(box, { recursive: true, force: true })
