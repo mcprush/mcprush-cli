@@ -644,11 +644,29 @@ function requireKey() {
 }
 
 /* `mcprush skill add <skill>` — a skill has no endpoint: it is a folder of text the client
-   reads, so installing one means writing its files where that client looks. They come from
-   the marketplace against the account's own key, and nothing here is executed. */
+   reads, so installing one means writing its files where that client looks. A free folder
+   comes from the marketplace openly, a paid one against the account's own key, and nothing
+   here is executed either way. */
 async function skill() {
-  requireKey()
   const verb = args._[1] === 'remove' || args._[1] === 'rm' ? 'remove' : 'add'
+  /* ==========================================================================
+     A FREE SKILL IS NOT REFUSED FOR WANT OF AN ACCOUNT.
+
+     This asked for a key before it asked for anything else, so
+     `mcprush skill add <free skill>` answered "No key held yet" and stopped —
+     a tool refusing to fetch a folder of text that its own website serves to
+     anyone. And that command is the one printed on the skill page for Claude
+     Code, Cursor, VS Code, Codex, Gemini, Zed and Windsurf: the majority of
+     readers were told to log in for something that was never gated.
+
+     The server settled this on 4 Sep 2026: bundle.tar.gz, skill.md, files and
+     file/* all serve a free skill unauthenticated, and a paid one still
+     answers 401 with its own sentence, which call() prints. So the key is no
+     longer asked for here — it is asked for by whoever actually needs it.
+
+     `remove` still needs one: it takes the install off the account, and there
+     is no account without a key. */
+  if (verb === 'remove') requireKey()
   /* A list, because the catalogue's "install selected" builds `skill add <a> <b> <c>`. */
   const named = (args._[1] === 'add' || args._[1] === 'remove' || args._[1] === 'rm'
     ? args._.slice(2)

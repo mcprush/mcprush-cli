@@ -25,11 +25,15 @@ surface you approved without you seeing it.
 
 A **skill** is the other half of the catalogue and works differently, because
 it is not an endpoint: it is a folder of instructions your client reads. So
-`skill add` asks the marketplace for the files of a skill your account holds,
-and writes them into the folder that client looks in — `.claude/skills/` for
-Claude Code, `.cursor/skills/` for Cursor, and so on, taken from the
-marketplace rather than guessed here. The files are text. Nothing is executed,
-before or after the write.
+`skill add` asks the marketplace for that folder and writes it into the place
+the client looks in — `.claude/skills/` for Claude Code, `.cursor/skills/` for
+Cursor, and so on, taken from the marketplace rather than guessed here. The
+files are text. Nothing is executed, before or after the write.
+
+A free skill needs no account: its folder is served to anyone, the same way
+the website serves it, so `skill add` works before you have signed up for
+anything. A paid one is served against the key of the account that bought it,
+and the marketplace says so in its own words if you have not.
 
 ## What it does not do
 

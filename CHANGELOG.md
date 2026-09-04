@@ -4,6 +4,15 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions
 follow [semver](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.3
+
+- `skill add` no longer asks for a key before it asks for anything else. A free
+  skill is served to anyone by the marketplace, and this refused to fetch one
+  without an account — on the very command the skill page prints for Claude
+  Code, Cursor, VS Code, Codex, Gemini, Zed and Windsurf. A paid skill still
+  answers 401 and the tool prints the server's own sentence. `skill remove`
+  still needs a key: it takes the install off the account.
+
 ## [0.1.2] — 2026-08-29
 
 Found by running the published package — not the working copy — through 414
