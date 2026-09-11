@@ -11,6 +11,7 @@ import {
   readConfig, writeConfig, host, key, CONFIG_FILE,
   CLIENTS, clientOf, entryFor, readClientFile, writeClientFile, atPath, skillDirFor,
   ensureInputs, insideDir, realInside, scrubLiteralKey, checkedUrl, safeEntryKey,
+  directStart, directEntryFor,
 } from '../lib/config.js'
 import { api, skillFile, Refused } from '../lib/api.js'
 import { parse, boolFlag } from '../lib/args.js'
@@ -40,7 +41,7 @@ const HELP = `${bold('mcprush')} ${dim(VERSION)} — install MCP servers from mc
   ${bold('mcprush remove')} <server>       take it out again
   ${bold('mcprush skill add')} <skill>      write a bought skill's folder to disk
   ${bold('mcprush skill remove')} <skill>   delete that folder again
-  ${bold('mcprush stack add')} <stack>      install the free members of a curated set
+  ${bold('mcprush stack add')} <stack>      install a curated set — gateway members and the ones you run yourself
   ${bold('mcprush add-list')} <list>         install one of your saved lists
   ${bold('mcprush budget')} [--max --alert]  the ceiling on what this account spends
   ${bold('mcprush list')}                  what this account has installed
@@ -381,7 +382,10 @@ async function add() {
   if (failed.length) process.exitCode = 1
 }
 
-/* `mcprush stack add <stack>` — the free members go in; the rest are named with the reason. */
+/* `mcprush stack add <stack>` — the free gateway members go in as before; the members the
+   client starts itself (`direct`) go in as command or address entries; the rest are named
+   with the reason. Every one of the twenty curated stacks on the catalogue is made of direct
+   members, so until they were written this command installed nothing from any of them. */
 async function stack() {
   requireKey()
   const name = args._[1] === 'add' ? args._[2] : args._[1]
@@ -415,29 +419,95 @@ async function stack() {
       + `a config — the first is \`${wrongHost[0].url}\`. Nothing was written to ${client ? client.name : clientId}. `
       + `The install is on your account; take it off in your dashboard if this was not you.`)
   }
+  /* The members the client starts itself. A marketplace older than this field sends none,
+     and then this is the empty list and nothing below says a word about it. Each one is
+     settled here — entry built, or the reason it was not — before anything is written, so
+     the file is still written once, whole, or not at all. */
+  const direct = (Array.isArray(res.direct) ? res.direct : [])
+    .filter((d) => d && typeof d === 'object')
+    .map((d) => {
+      const item = {
+        id: String(d.id ?? ''),
+        name: String(d.name ?? d.id ?? ''),
+        source: d.source && typeof d.source === 'object' ? d.source : null,
+        start: typeof d.start === 'string' && d.start ? d.start : null,
+        page: typeof d.page === 'string' && d.page ? d.page : null,
+      }
+      const started = directStart(item.source)
+      if (started.why) return { ...item, written: false, why: started.why }
+      if (!client) return { ...item, written: false, why: `${clientId} is set up by hand` }
+      /* The same check the gateway members get, with a different outcome: a member named
+         `__proto__` or `a/b` is not written, is said so, and does not stop the others. */
+      const k = safeEntryKey(item.id)
+      if (!k) return { ...item, written: false, why: 'named in a way this tool will not write into a config' }
+      return { ...item, written: true, key: k, entry: directEntryFor(client.shape, started) }
+    })
+  const toWrite = direct.filter((d) => d.written)
+  const byHand = direct.filter((d) => !d.written)
+
   let wrote = null
-  if (client && res.added.length && !DRY) {
+  if (client && (res.added.length || toWrite.length) && !DRY) {
     const bucket = atPath(data, client.at)
     for (const a of res.added) {
       const k = safeEntryKey(a.id)
       if (!k) throw new Refused(`${host()} named a stack member \`${String(a.id).slice(0, 40)}\` this tool will not write. Nothing was written.`)
       bucket[k] = entryFor(client.shape, a.url, key())
     }
+    for (const d of toWrite) {
+      d.replaced = !!bucket[d.key]
+      bucket[d.key] = d.entry
+    }
     scrubLiteralKey(client, data, key())
     wrote = writeClientFile(client, ensureInputs(client, data))
   }
 
-  emit({ ok: true, stack: name, added: res.added, skipped: res.skipped, wrote, client: clientId }, () => {
-    say(green('✓') + ` ${bold(safe(res.name) || name)} — ${res.added.length} installed`)
+  /* `skipped` still carries every direct member, as the server sends it for the 0.1.3
+     reader; here they are told once, in their own section, so the id is not listed twice. */
+  const directIds = new Set(direct.map((d) => d.id))
+  const skippedOnly = res.skipped.filter((sk) => !(sk && directIds.has(String(sk.id))))
+
+  emit({
+    ok: true, stack: name, added: res.added, skipped: res.skipped, wrote, client: clientId,
+    /* `key` is the entry name inside the file, which is the id already checked; the rest —
+       the entry as written, or the reason it was not — is what a script wants to read */
+    direct: direct.map(({ key: _k, ...d }) => d),
+    counts: {
+      added: res.added.length, direct: direct.length, skipped: res.skipped.length,
+      directWritten: toWrite.length, byHand: byHand.length,
+    },
+  }, () => {
+    const tally = [`${res.added.length} installed`]
+    if (toWrite.length) tally.push(`${toWrite.length} written from ${toWrite.length === 1 ? 'its' : 'their'} own source`)
+    if (byHand.length) tally.push(`${byHand.length} to set up by hand`)
+    say(green('✓') + ` ${bold(safe(res.name) || name)} — ${tally.join(', ')}`)
     /* A client we do not write has to be named, or the installs land in silence. */
     if (!client) {
       say(dim(`  ${clientId} is set up by hand — nothing was written to a config`))
-      say(dim(`  each address above goes with: Authorization: Bearer ${key()}`))
+      if (res.added.length) say(dim(`  each address above goes with: Authorization: Bearer ${key()}`))
     }
-    for (const a of res.added) say(dim('  + ' + a.id))
-    for (const sk of res.skipped) say(dim(`  · ${sk.id} — ${sk.why}`))
+    for (const a of res.added) say(dim('  + ' + safe(a.id)))
+    /* The line the client will run is printed beside the entry: it is somebody else's
+       package, and the person restarting the client should have seen it. */
+    for (const d of toWrite) {
+      /* from the entry itself when the server sent no line: the file is the truth here */
+      const line = d.start || (d.entry.command ? [d.entry.command, ...d.entry.args].join(' ') : d.entry.url || d.entry.serverUrl)
+      say(dim(`  + ${safe(d.id)}  ${safe(line)}`))
+    }
+    for (const sk of skippedOnly) say(dim(`  · ${safe(sk.id)} — ${safe(sk.why)}`))
     if (wrote) say(dim(`  ${wrote}`))
-    if (res.skipped.some((x) => x.why.startsWith('paid'))) say(dim('  ' + (res.page || '')))
+    if (skippedOnly.some((x) => String(x.why || '').startsWith('paid'))) say(dim('  ' + safe(res.page || '')))
+    if (byHand.length) {
+      say('')
+      say(`  ${bold('Set up by hand')} — this marketplace is not in the path for these:`)
+      for (const d of byHand) {
+        say(`  • ${bold(safe(d.name) || safe(d.id))}`)
+        /* the start line where there is one, and always the reason it was not written:
+           "codex is set up by hand" beside a line to paste, "no console script" beside none */
+        if (d.start) say(`      ${safe(d.start)}`)
+        say(dim(`      ${safe(d.why)}`))
+        if (d.page) say(dim(`      ${safe(d.page)}`))
+      }
+    }
   })
 }
 

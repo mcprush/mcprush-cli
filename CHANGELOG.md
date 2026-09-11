@@ -4,6 +4,44 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions
 follow [semver](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] — 2026-09-11
+
+### Fixed
+
+- **`stack add` installed nothing from any stack on the catalogue.** It wrote
+  only the free members that go through the gateway, and every member of all
+  twenty curated stacks is a direct listing — an npm or PyPI package, a docker
+  image or a publisher's own address, which the client starts itself. Each one
+  was named as skipped with "runs on your own machine" and nothing else.
+
+### Added
+
+- `stack add` writes direct members into the client's config as the entry the
+  listing page prints: `command` and `args` for a package or image (`npx -y
+  <pkg>`, `npx -y -p <pkg> <program>`, `uvx <pkg>`, `uvx --from <pkg>
+  <program>`, `docker run -i --rm <image>`), or the address with the transport
+  the publisher declares. Each client gets its own field names: `type: stdio`
+  for VS Code, `context_servers` with `source: custom` for Zed, `serverUrl` for
+  a remote in Windsurf. The line the client will run is printed beside the
+  entry. No key of ours goes into these entries, because no call goes
+  through the gateway.
+- A direct member that cannot be written — a client this tool does not write,
+  a package that declares no program, a repository with no package, an address
+  that is not https — is printed under "Set up by hand" with its name, its
+  start line or the reason there is none, and its page. The rest of the stack
+  is still written. A gateway member this tool refuses still stops the whole
+  write, as before.
+- `--json` for `stack add` carries `direct` (each member with `source`, `start`,
+  `page`, `written`, and the `entry` written or the `why` it was not) and
+  `counts`. `added`, `skipped`, `wrote` and `client` are unchanged, and a
+  marketplace that does not send `direct` yields `direct: []`.
+- What the marketplace names ends up as a process argument, so it is bounded:
+  a package or image name is one token with no whitespace and no leading dash,
+  a program name is plainer still, and an address is https with no credentials.
+  Anything else is printed for the person rather than written for the client.
+- Eleven tests on the above, run against a marketplace answering like the real
+  one: 42 in total.
+
 ## 0.1.3
 
 - `skill add` no longer asks for a key before it asks for anything else. A free

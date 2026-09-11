@@ -35,14 +35,31 @@ the website serves it, so `skill add` works before you have signed up for
 anything. A paid one is served against the key of the account that bought it,
 and the marketplace says so in its own words if you have not.
 
+A **stack** is a curated set of listings, and most of its members are
+**direct**: public servers collected from open sources — an npm or PyPI
+package, a docker image, a publisher's own address — which your client starts
+itself, with this marketplace nowhere in the path. `stack add` writes those
+into the client's config as the entry the listing page prints (`npx -y <pkg>`,
+`uvx <pkg>`, `docker run -i --rm <image>`, or the address with its transport),
+with no key of ours in them, and prints the line the client will run beside
+each one. Gateway members are installed and written as `add` does. A member it
+cannot write — a package that declares no program, a repository with no
+package, a client this tool does not write — is printed with its start line or
+the reason there is none, and its page, so you can set it up by hand.
+
 ## What it does not do
 
 - **It never takes a card.** A paid listing is bought in the browser, where
   there is a price you have seen and an invoice you can keep.
 - **It never runs anybody's code.** A proxied server runs on the publisher's
-  own machine; a local one is installed by its own instructions. `skill add`
-  downloads text files and writes them — it does not execute them, and it
-  refuses any file path that would land outside the skill's own folder.
+  own machine. A direct member of a stack is written as the command your
+  client will start — `npx`, `uvx`, `docker run` — and that command is printed
+  so you have read it before you restart the client; this tool starts nothing
+  itself. What goes into such an entry is bounded: a package or image name is
+  one token with no whitespace and no leading dash, and an address is https
+  with no credentials in it. `skill add` downloads text files and writes
+  them — it does not execute them, and it refuses any file path that would
+  land outside the skill's own folder.
 - **It never rewrites a config file it could not parse.** If your config has
   comments in it or is half-edited, it stops and prints what to paste.
 
@@ -58,7 +75,7 @@ are written mode 0600, because a client config holds your key.
 | `mcprush remove <server>` | take it out of the client and off the account |
 | `mcprush skill add <skill>` | write a skill's folder to disk |
 | `mcprush skill remove <skill>` | delete that folder again |
-| `mcprush stack add <stack>` | install the free members of a curated set |
+| `mcprush stack add <stack>` | install a curated set: gateway members through the gateway, direct ones as the command or address the client starts |
 | `mcprush add-list <list>` | install one of your saved lists |
 | `mcprush budget [--max --alert]` | the ceiling on what this account spends |
 | `mcprush list` | what this account has installed |
@@ -124,7 +141,7 @@ No dependencies and no build step: the files in `bin/` and `lib/` are what
 ships.
 
 ```sh
-npm test                 # 22 tests, node:test, no runner to install
+npm test                 # 42 tests, node:test, no runner to install
 npm pack --dry-run       # what would go to the registry
 node bin/mcprush.js --help
 ```
