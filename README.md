@@ -33,7 +33,12 @@ files are text. Nothing is executed, before or after the write.
 A free skill needs no account: its folder is served to anyone, the same way
 the website serves it, so `skill add` works before you have signed up for
 anything. A paid one is served against the key of the account that bought it,
-and the marketplace says so in its own words if you have not.
+and the marketplace says so in its own words if you have not. `skill add`
+leaves a small manifest, `.mcprush.json`, in the folder naming what it wrote;
+`skill remove` deletes those files and nothing else — notes you added and files
+you changed stay — and it needs neither a key nor the marketplace, since a
+delete is a local matter. A folder without that manifest was not written by
+this tool, and is neither deleted nor overwritten unless you pass `--force`.
 
 A **stack** is a curated set of listings, and most of its members are
 **direct**: public servers collected from open sources — an npm or PyPI
@@ -61,20 +66,38 @@ the reason there is none, and its page, so you can set it up by hand.
   them — it does not execute them, and it refuses any file path that would
   land outside the skill's own folder.
 - **It never rewrites a config file it could not parse.** If your config has
-  comments in it or is half-edited, it stops and prints what to paste.
+  comments in it or is half-edited, it stops and prints what to paste, in the
+  field names of the client it was writing for. Zed's `settings.json` is the
+  one exception, because Zed itself writes it with comments and trailing
+  commas: those are dropped on the write, the tool says so, and the original
+  is kept byte for byte in the `.bak`.
+- **It never deletes an entry it did not write.** `remove` takes out a gateway
+  entry — an address at the marketplace with your key beside it — and asks the
+  account first: a monthly install the marketplace will not cancel from a
+  terminal keeps its entry. A hand-written entry under the same name, or a
+  direct member `stack add` wrote (the same entry the listing page prints), is
+  left alone unless you pass `--force`.
 
-Every write keeps a `.bak` of what was there before, next to the file. Both
-are written mode 0600, because a client config holds your key.
+Every config write keeps a `.bak` of what was there before, next to the file,
+and both are written mode 0600, because a client config holds your key. The
+entries are applied to a fresh read of the file at the moment of the write, so
+what the client saved while the tool was on the network is kept. A parsed file
+is written back as JSON with two-space indentation — formatting is not
+preserved, the `.bak` keeps the original bytes — and a file holding an integer
+past 2^53, which JSON cannot carry unchanged, is refused rather than altered.
+A skill folder gets no `.bak`: `skill add` replaces an install you have not
+touched, refuses one you changed unless you pass `--force`, and `--force`
+keeps no copy.
 
 ## Commands
 
 | | |
 |---|---|
-| `mcprush login [key]` | hold a key; it is checked before it is stored |
-| `mcprush add <server> [<server> …]` | install and write the client entry |
-| `mcprush remove <server>` | take it out of the client and off the account |
-| `mcprush skill add <skill>` | write a skill's folder to disk |
-| `mcprush skill remove <skill>` | delete that folder again |
+| `mcprush login [key]` | hold a key; it is checked before it is stored, and `--dry-run` checks without storing |
+| `mcprush add <server> [<server> …]` | install and write the client entry; the key from the card or the page's `<publisher>/<slug>` |
+| `mcprush remove <server>` | take it off the account and out of the client, by either spelling; only an entry this tool wrote, unless `--force` |
+| `mcprush skill add <skill>` | write a skill's folder to disk; a folder you changed is replaced only with `--force` |
+| `mcprush skill remove <skill>` | delete what `skill add` wrote and keep what you added; no key needed |
 | `mcprush stack add <stack>` | install a curated set: gateway members through the gateway, direct ones as the command or address the client starts |
 | `mcprush add-list <list>` | install one of your saved lists |
 | `mcprush budget [--max --alert]` | the ceiling on what this account spends |
@@ -86,11 +109,12 @@ Flags:
 
 | | |
 |---|---|
-| `--client <id>` | which client to write (default: `claude-code`) |
+| `--client <id>` | which client to write (default: `claude-code`); case does not matter, `claude-desktop`, `code` and `vs-code` are accepted, and a name the marketplace does not know is refused before anything is installed |
 | `--global` | for skills: the home folder rather than this project |
-| `--host <url>` | a different marketplace (default: mcprush.com) |
-| `--json` | machine-readable output, including on `--dry-run` |
-| `--dry-run` | say what would be written, write nothing |
+| `--host <url>` | a different marketplace (default: mcprush.com); https, or `http://localhost` for one of your own — the key travels with every call, and a redirect is never followed. A trailing slash or a missing scheme is fine |
+| `--json` | machine-readable output, on every path — a refusal is `{ ok: false, error, status, … }` with only the fields the marketplace sent |
+| `--dry-run` | say what would be written, write nothing — `login` included |
+| `--force` | `skill add`: replace a folder you changed or did not get from here · `remove`: take out an entry this tool did not write |
 
 Amounts keep the dollar sign inside single quotes, or your shell eats it:
 `mcprush budget --max '$900/mo' --alert 80%`.
@@ -102,8 +126,12 @@ no catalogue cache, no history.
 
 Clients whose config path is documented and stable are written directly:
 Claude Code, Claude Desktop (`--client claude`, and `claude-desktop` is
-accepted too), Cursor, Windsurf, VS Code (per workspace) and Zed. For anything
-else, `mcprush add <server> --json` prints the address and the header to paste.
+accepted too), Cursor, Windsurf, VS Code (per workspace) and Zed — whose
+`settings.json` is looked for where Zed keeps it on each platform:
+`~/.config/zed` on macOS, `$XDG_CONFIG_HOME/zed` on Linux, `%APPDATA%\Zed` on
+Windows. For anything else, `mcprush add <server> --json` prints the address
+and the header to paste, and `stack add` and `add-list` print the address
+beside each member.
 
 **VS Code is the one exception to writing your key into a file.** Its config
 lives at `.vscode/mcp.json` inside the folder you have open — that is, inside
@@ -130,7 +158,8 @@ preference.
 ## Environment
 
 - `MCPRUSH_KEY` — use this key instead of the stored one
-- `MCPRUSH_HOST` — point at a different marketplace
+- `MCPRUSH_HOST` — point at a different marketplace; https, or plain http to
+  this machine only
 - `NO_COLOR` — plain output
 
 MIT. Issues and the catalogue: https://mcprush.com
@@ -141,7 +170,7 @@ No dependencies and no build step: the files in `bin/` and `lib/` are what
 ships.
 
 ```sh
-npm test                 # 42 tests, node:test, no runner to install
+npm test                 # 85 tests, node:test, no runner to install
 npm pack --dry-run       # what would go to the registry
 node bin/mcprush.js --help
 ```

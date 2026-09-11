@@ -6,7 +6,133 @@ follow [semver](https://semver.org/spec/v2.0.0.html).
 
 ## [0.1.4] — 2026-09-11
 
+An adversarial audit of 0.1.4 as it stood — thirty-seven findings, each
+reproduced against a marketplace answering like the real one and confirmed by
+a second reader trying to disprove it — and what was done about them. Nothing
+here is published yet; the release goes out with the fixes.
+
+### Security
+
+- **`remove` deleted any same-named entry before asking the server.** A
+  hand-written `github` with its own token in it was gone from `~/.claude.json`
+  by the time the marketplace answered "not installed on this account"; on a
+  monthly install the marketplace refuses to cancel from a terminal, the entry
+  vanished while the subscription kept billing. `remove` now asks the account
+  first, rewrites the file only when the account has nothing left to say (200
+  or 404), and takes out only a gateway entry — an address at the marketplace
+  with the key beside it. Anything else is left alone, with a sentence, unless
+  `--force` is passed. The page's `<publisher>/<slug>` resolves as it does for
+  `add`, so an install made with the command the page prints can be undone
+  with the same name; `__proto__`, `toString` and their kind are no longer
+  found on the prototype and reported as entries taken out.
+- **`skill remove` deleted the whole folder, and `skill add` overwrote one.**
+  The only test of ownership was a `SKILL.md`, which every skill folder has:
+  a hand-written skill under a colliding slug was deleted, or replaced, with
+  a tick. `skill add` now leaves `.mcprush.json` naming each file it wrote
+  with its hash; `skill remove` deletes the files that still match and keeps
+  what was changed or added, saying which; a folder with no manifest is
+  neither deleted nor overwritten without `--force`. `skill add` over an
+  untouched install replaces it whole (files the new version dropped go
+  too); over one with changes it refuses, naming them, unless `--force`.
+- **The key went in the clear to any plain-http host.** `--host
+  http://192.168…` or the `http://mcprush.com` typo sent `Authorization`
+  over plain http — and on the typo, the edge's redirect to https dropped the
+  header, so the tool then reported "this needs a key". A host is now https,
+  or plain http to this machine only, checked before the connection; a
+  redirect is never followed with the key, and is reported as one.
+- **A planted symlink at the temporary file name took the config elsewhere.**
+  The config and its `.bak` were refused when linked, the `<file>.tmp-<pid>`
+  beside them was not: the write followed the link, key and all, and the
+  rename moved the link over the config. The temporary is created exclusively
+  now, so a link under that name is refused rather than written through.
+- **The install answer's address was written unchecked.** The listing's
+  address was checked before the install was recorded; the address in the
+  install route's answer replaced it afterwards, unchecked, and for a client
+  this tool does not write it was printed beside the key. It is checked like
+  the listing's, and the checked listing address stands in for one that fails.
+
 ### Fixed
+
+- **`login --dry-run` wrote the key.** The one command that did, replacing a
+  key already held and pinning `--host`. It now checks the key — a dead one is
+  still refused — and writes nothing, saying what it would have.
+- **A mis-typed or capitalised `--client` installed on the account and wrote
+  nothing.** `cursr`, `Cursor`, `CURSOR` matched no client, so the tool took
+  it for one set up by hand and printed a tick. The spelling is folded to the
+  marketplace's own id, and a name that is neither a client this tool writes
+  nor one in the marketplace's table is refused before the first request. The
+  alias the site prints, `claude-desktop`, reached the server verbatim and
+  the install was filed under no client; the server now hears `claude`.
+- **`stack add` and `add-list` refused the config after the installs.** A
+  list where `mcpServers` belongs was found after the route had recorded the
+  installs, under "Nothing was changed"; on the retry the stack route answered
+  "already installed" with no address, so the entry was never written. The
+  file is now checked before any request, and a member the account already
+  holds is written from the install route's answer, which records nothing
+  twice. `add`'s own late refusals — a linked config, an unwritable folder —
+  are likewise found before the install; a write that still fails names the
+  installs already on the account and the `remove` that takes them off.
+- **What the client saved while the tool was on the network was lost.** The
+  config was read before the round trips and written after them from that
+  copy, so Claude Code's own writes in between — projects, OAuth, an entry it
+  added — were overwritten; the `.bak` held the newer file. Entries are now
+  applied to a fresh read at the moment of the write.
+- **`skill add` left a half folder.** Files were written as they arrived, so a
+  503 on the second left a `SKILL.md` with no references, which the client
+  loads as complete, under "nothing was written". Every file is fetched
+  first, written into a folder beside the real one, and swapped in whole; a
+  file name the disk will not take is a refusal, not a stack trace.
+- **A host with a trailing slash broke every POST.** `--host
+  https://mcprush.com/` was pinned as typed and every request went to
+  `//api/cli/…`, which the server redirects for a GET and refuses for a POST:
+  `login` succeeded and `add`, `remove`, `stack add`, `add-list`, `budget`
+  failed with "no endpoint at that address". The host is normalised once; a
+  missing scheme reads as https.
+- **Zed's own `settings.json` was refused.** Zed writes it with comments and
+  trailing commas; every stock install failed "not valid JSON", and the paste
+  hint gave a Claude Code entry under `mcpServers`, which Zed does not read.
+  Comments and trailing commas are dropped for Zed's file alone, with a line
+  saying so and the original in the `.bak`; a byte-order mark is read past
+  for every client; the hint names the section and the entry shape of the
+  client at hand. Zed's path was `~/.config/zed` on every platform: it is
+  `%APPDATA%\Zed` on Windows and honours `XDG_CONFIG_HOME` on Linux.
+- **`stack remove`, `skill uninstall`** and any other undocumented verb were
+  read as a name: `skill uninstall foo` installed a third-party skill called
+  "uninstall" and re-installed `foo`. Anything but `stack add` and `skill
+  add|remove|rm` is refused before a request.
+- **`skill remove` demanded a key it never used**, and could not run offline:
+  a free skill added without an account could not be removed with the tool.
+  It takes no key now, and `<publisher>/<slug>` needs no marketplace at all.
+- **`add-list` skipped a paid listing the account owns as "paid"**, while
+  `add` and the install route both accept it. A saved list with a purchase
+  in it installs whole on a second machine now.
+- **`--json` was not JSON for a raw error.** A directory where the config
+  belongs, an unreadable file: bare stderr, empty stdout. Every path answers
+  in the format asked for, and a config that cannot be read is a sentence
+  naming the file.
+- **`budget --max 0`, `--max ,`, `--max 1,0,0`** passed a dry run the server
+  would refuse or read differently; `--alert 50.7` previewed a number the
+  server rounds. Amounts are parsed as the server parses them, in its range.
+- **The address for a client this tool does not write was missing.** `stack
+  add --client codex` printed "each address above goes with: Authorization…"
+  over a list of ids; the address is printed beside each one now, for `stack
+  add` and `add-list` both.
+- **`--json` refusals leaked the internal `handled` marker** and filled
+  absent fields with empty strings, which `jq` does not read as absent; a 429
+  named its wait only in prose. Only the fields the marketplace sent travel,
+  plus `status` and `retryAfterSeconds`; a 404 on `add-list` carries the
+  `lists` the server offers, printed in human output too. `add-list` cut
+  refusals at 80 characters and dropped the page address the server sent
+  with them; multi-name `add` dropped it as well. Whole now, with the address.
+- **A VS Code `inputs` that is not a list was replaced.** Refused, as a list
+  where `servers` belongs is.
+- **An integer past 2^53 in a config was rewritten** by the JSON round trip
+  with no word said. Such a file is refused; ordinary number and formatting
+  normalisation is documented rather than hidden.
+- `add` says when the account already held the listing (`unchanged` in
+  `--json`, "already on this account" in prose).
+
+### Fixed earlier in this version
 
 - **`stack add` installed nothing from any stack on the catalogue.** It wrote
   only the free members that go through the gateway, and every member of all
@@ -39,8 +165,9 @@ follow [semver](https://semver.org/spec/v2.0.0.html).
   a package or image name is one token with no whitespace and no leading dash,
   a program name is plainer still, and an address is https with no credentials.
   Anything else is printed for the person rather than written for the client.
-- Eleven tests on the above, run against a marketplace answering like the real
-  one: 42 in total.
+- `--force`, for `skill add` and `remove`, as described above.
+- Fifty-four tests on the above, most run against a marketplace answering
+  like the real one: 85 in total.
 
 ## 0.1.3
 

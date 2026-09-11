@@ -23,9 +23,10 @@ Worth knowing before you read the code:
   holds and writes them to disk. Nothing is executed, and every path is
   checked to land inside the skill's own folder — including after symlinks
   are resolved.
-- **It talks to one host.** The marketplace named by `MCPRUSH_HOST`, or
-  mcprush.com. An address in an answer pointing anywhere else is refused
-  rather than written into a config next to your key.
+- **It talks to one host, over https.** The marketplace named by
+  `MCPRUSH_HOST`, or mcprush.com; plain http only to this machine, and never
+  through a redirect. An address in an answer pointing anywhere else is
+  refused rather than written into a config next to your key.
 
 ## What it deliberately cannot do
 
