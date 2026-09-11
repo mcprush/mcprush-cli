@@ -42,6 +42,8 @@ const NO_LINE = [
     source: null, start: null, page: 'https://mcprush.com/pub/from-source' },
 ]
 
+const status = (code, body, headers) => ({ $status: code, $body: body, $headers: headers || {} })
+
 function marketplace(answer) {
   const seen = []
   const server = createServer((req, res) => {
@@ -49,8 +51,13 @@ function marketplace(answer) {
     req.on('data', (c) => { body += c })
     req.on('end', () => {
       seen.push({ method: req.method, url: req.url, body: body ? JSON.parse(body) : null })
+      let out = typeof answer === 'function' ? answer(seen.at(-1)) : answer
+      /* an answer with a status and headers of its own, as harness.js spells it */
+      const reply = out && typeof out === 'object' && '$status' in out ? out : { $status: 200, $body: out, $headers: {} }
+      res.statusCode = reply.$status
+      for (const [k, v] of Object.entries(reply.$headers || {})) res.setHeader(k, v)
       res.setHeader('content-type', 'application/json')
-      res.end(JSON.stringify(typeof answer === 'function' ? answer(seen.at(-1)) : answer))
+      res.end(JSON.stringify(reply.$body))
     })
   })
   return new Promise((ok) => server.listen(0, '127.0.0.1', () => {
