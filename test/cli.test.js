@@ -3,12 +3,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync, readFileSync, readdirSync, lstatSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import {
   clientOf, entryFor, ensureInputs, insideDir, realInside, safeFolder, skillDirFor,
   scrubLiteralKey, checkedUrl, atPath, readClientFile, writeClientFile, safeEntryKey,
-  CLIENTS, VSCODE_INPUT, HOME,
+  CLIENTS, VSCODE_INPUT, HOME, host, checkedHost, canonicalClient, KNOWN_CLIENTS, zedSettingsFile,
+  NOTES, ownEntry, Refused, updateClientFile,
 } from '../lib/config.js'
 import { parse, boolFlag } from '../lib/args.js'
 
@@ -327,4 +328,162 @@ test('a host carrying a username and password keeps neither', () => {
   assert.ok(!String(u).includes('secret'))
   assert.ok(!String(u).includes('someone'))
   assert.ok(String(u).startsWith('https://mcprush.com/'))
+})
+
+test('the host is normalised once: no trailing slash, https when no scheme is given', () => {
+  const was = process.env.MCPRUSH_HOST
+  try {
+    process.env.MCPRUSH_HOST = 'http://127.0.0.1:1/'
+    assert.equal(host(), 'http://127.0.0.1:1')
+    process.env.MCPRUSH_HOST = '  https://mcprush.com//  '
+    assert.equal(host(), 'https://mcprush.com')
+    process.env.MCPRUSH_HOST = 'mcprush.com'
+    assert.equal(host(), 'https://mcprush.com')
+  } finally {
+    if (was === undefined) delete process.env.MCPRUSH_HOST
+    else process.env.MCPRUSH_HOST = was
+  }
+})
+
+test('the key leaves the process only for https, or for this machine', () => {
+  const was = process.env.MCPRUSH_HOST
+  try {
+    for (const ok of ['https://mcprush.com', 'http://127.0.0.1:3000', 'http://localhost:3000/', 'http://[::1]:3000']) {
+      process.env.MCPRUSH_HOST = ok
+      assert.equal(checkedHost(), ok.replace(/\/+$/, ''), ok)
+    }
+    for (const [bad, why] of [
+      ['http://192.168.3.8:8766', /not https/],
+      ['http://mcprush.com', /not https/],
+      ['https://user:pw@mcprush.com', /username or password/],
+      ['ftp://mcprush.com', /not an http or https address/],
+      ['https://', /not an address this tool can talk to/],
+    ]) {
+      process.env.MCPRUSH_HOST = bad
+      assert.throws(() => checkedHost(), why, bad)
+    }
+    /* checkedUrl agrees with it on loopback */
+    process.env.MCPRUSH_HOST = 'http://[::1]:3000'
+    assert.ok(checkedUrl('http://[::1]:3000/gw/x/mcp'))
+  } finally {
+    if (was === undefined) delete process.env.MCPRUSH_HOST
+    else process.env.MCPRUSH_HOST = was
+  }
+})
+
+test('one spelling of a client: aliases and case fold to the marketplace\'s id', () => {
+  assert.equal(canonicalClient('claude-desktop'), 'claude')
+  assert.equal(canonicalClient('Claude-Desktop'), 'claude')
+  assert.equal(canonicalClient('CURSOR'), 'cursor')
+  assert.equal(canonicalClient(' code '), 'vscode')
+  assert.equal(canonicalClient('codex'), 'codex')
+  assert.equal(canonicalClient('cursr'), 'cursr', 'a typo is not corrected, it is refused by the caller')
+  assert.equal(clientOf('Cursor'), CLIENTS.cursor)
+  assert.ok(KNOWN_CLIENTS.includes('codex') && KNOWN_CLIENTS.includes('claude'))
+})
+
+test('Zed reads its settings from the platform\'s config folder, not always ~/.config', () => {
+  assert.equal(zedSettingsFile('win32', { APPDATA: 'C:\\Users\\u\\AppData\\Roaming' }, 'C:\\Users\\u'),
+    join('C:\\Users\\u\\AppData\\Roaming', 'Zed', 'settings.json'))
+  assert.equal(zedSettingsFile('win32', {}, '/home/u'), join('/home/u', 'AppData', 'Roaming', 'Zed', 'settings.json'))
+  assert.equal(zedSettingsFile('linux', { XDG_CONFIG_HOME: '/xdg' }, '/home/u'), join('/xdg', 'zed', 'settings.json'))
+  assert.equal(zedSettingsFile('linux', { FLATPAK_XDG_CONFIG_HOME: '/flat', XDG_CONFIG_HOME: '/xdg' }, '/home/u'), join('/flat', 'zed', 'settings.json'))
+  assert.equal(zedSettingsFile('linux', {}, '/home/u'), join('/home/u', '.config', 'zed', 'settings.json'))
+  assert.equal(zedSettingsFile('darwin', { XDG_CONFIG_HOME: '/xdg' }, '/Users/u'), join('/Users/u', '.config', 'zed', 'settings.json'))
+  assert.equal(CLIENTS.zed.file, zedSettingsFile())
+})
+
+test('a byte-order mark is read past; Zed\'s comments are dropped for Zed alone; a lossy integer is refused', () => {
+  const box = mkdtempSync(join(tmpdir(), 'mcprush-read-'))
+  try {
+    const cc = { ...CLIENTS['claude-code'], file: join(box, 'c.json') }
+    writeFileSync(cc.file, '\uFEFF{"mcpServers":{"a":{}}}')
+    assert.deepEqual(readClientFile(cc), { mcpServers: { a: {} } })
+
+    const zed = { ...CLIENTS.zed, file: join(box, 'settings.json') }
+    const stock = '// Zed settings\n{\n  "ui_font_size": 16, // px\n  /* block */ "theme": { "mode": "system", "dark": "One Dark", },\n  "s": "a, }", "t": "// not a comment",\n}\n'
+    writeFileSync(zed.file, stock)
+    const parsed = readClientFile(zed)
+    assert.deepEqual(parsed, { ui_font_size: 16, theme: { mode: 'system', dark: 'One Dark' }, s: 'a, }', t: '// not a comment' })
+    assert.ok(Array.isArray(parsed[NOTES]) && /comments and trailing commas/.test(parsed[NOTES][0]))
+    assert.ok(!JSON.stringify(parsed).includes('comments'), 'the note is not written back')
+    writeFileSync(cc.file, stock)
+    assert.throws(() => readClientFile(cc), /not valid JSON/, 'the leniency is Zed\'s alone')
+    assert.throws(() => readClientFile(cc), /under mcpServers the entry is/, 'and the hint names the section')
+    writeFileSync(zed.file, '// half\n{ "a": ')
+    assert.throws(() => readClientFile(zed), /not valid JSON/, 'a file that is not JSONC either')
+
+    writeFileSync(cc.file, '{"mcpServers":{},"num":{"big":12345678901234567890,"neg":-9007199254740993}}')
+    assert.throws(() => readClientFile(cc), /cannot write back unchanged \(12345678901234567890\)/)
+    writeFileSync(cc.file, '{"mcpServers":{},"costUSD":0.0123456789012345,"ok":9007199254740991,"f":1e3,"s":"12345678901234567890"}')
+    assert.equal(readClientFile(cc).costUSD, 0.0123456789012345, 'fraction digits and strings are not integers')
+
+    mkdirSync(join(box, 'dir.json'))
+    assert.throws(() => readClientFile({ ...cc, file: join(box, 'dir.json') }), /could not be read \(EISDIR\)/)
+  } finally {
+    rmSync(box, { recursive: true, force: true })
+  }
+})
+
+test('a VS Code inputs that is not a list is refused rather than replaced', () => {
+  assert.throws(() => ensureInputs(CLIENTS.vscode, { inputs: { id: 'mine' } }), /inputs .* an object, and VS Code takes a list/)
+  assert.throws(() => ensureInputs(CLIENTS.vscode, { inputs: 'keep-me' }), /takes a list/)
+  assert.equal(ensureInputs(CLIENTS.vscode, { inputs: null }).inputs.length, 1, 'null is absent')
+})
+
+test('a link planted at the temporary name is not written through, and the config does not become a link', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcprush-tmp-'))
+  try {
+    const file = join(dir, 'mcp.json')
+    writeFileSync(file, '{"mcpServers":{}}\n')
+    const victim = join(dir, 'victim.txt')
+    writeFileSync(victim, 'ORIGINAL')
+    symlinkSync(victim, file + '.tmp-' + process.pid)
+    const client = { name: 'Cursor', file, at: ['mcpServers'], shape: 'http' }
+    writeClientFile(client, { mcpServers: { x: { type: 'http', url: 'https://mcprush.com/gw/x/mcp', headers: { Authorization: 'Bearer mk_live_secret' } } } })
+    assert.equal(readFileSync(victim, 'utf8'), 'ORIGINAL', 'the link target was not written')
+    assert.equal(lstatSync(file).isSymbolicLink(), false, 'the config is a file, not the moved link')
+    assert.ok(JSON.parse(readFileSync(file, 'utf8')).mcpServers.x)
+    assert.deepEqual(readdirSync(dir).filter((f) => f.includes('.tmp-')), [])
+    /* a dangling link, likewise */
+    symlinkSync(join(dir, 'nowhere'), file + '.tmp-' + process.pid)
+    writeClientFile(client, { mcpServers: {} })
+    assert.equal(lstatSync(file).isSymbolicLink(), false)
+    assert.ok(!existsSync(join(dir, 'nowhere')))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an entry of ours is a gateway address at our origin; anything else is somebody\'s', () => {
+  assert.equal(ownEntry({ type: 'http', url: 'https://mcprush.com/gw/x/mcp', headers: { Authorization: 'Bearer k' } }), true)
+  assert.equal(ownEntry({ serverUrl: 'https://mcprush.com/gw/x/mcp' }), true, 'Windsurf\'s field name')
+  assert.equal(ownEntry({ command: 'npx', args: ['-y', 'gh'] }), false, 'a direct member, or a hand-written one')
+  assert.equal(ownEntry({ type: 'http', url: 'https://elsewhere.example/mcp', headers: {} }), false)
+  assert.equal(ownEntry(null), false)
+  assert.equal(ownEntry([]), false)
+})
+
+test('the marker that makes an error a refusal is not part of its JSON', () => {
+  const e = new Refused('no', { status: 402, checkout: 'https://x' })
+  assert.equal(e.handled, true)
+  assert.deepEqual({ ...e }, { status: 402, checkout: 'https://x' })
+  assert.ok(e instanceof Error)
+})
+
+test('the write applies to a fresh read of the file, not to the copy taken earlier', () => {
+  const box = mkdtempSync(join(tmpdir(), 'mcprush-fresh-'))
+  try {
+    const client = { ...CLIENTS.cursor, file: join(box, 'mcp.json') }
+    writeFileSync(client.file, '{"mcpServers":{"a":{}}}')
+    const early = readClientFile(client)
+    writeFileSync(client.file, '{"mcpServers":{"a":{},"b":{}},"later":true}')
+    const { file } = updateClientFile(client, (fresh) => { atPath(fresh, client.at).c = {} })
+    const after = JSON.parse(readFileSync(file, 'utf8'))
+    assert.deepEqual(Object.keys(after.mcpServers), ['a', 'b', 'c'])
+    assert.equal(after.later, true)
+    assert.equal(early.mcpServers.b, undefined, 'the early copy was not what was written')
+  } finally {
+    rmSync(box, { recursive: true, force: true })
+  }
 })

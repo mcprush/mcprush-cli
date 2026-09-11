@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { directStart, directEntryFor } from '../lib/config.js'
@@ -72,7 +72,7 @@ function run(host, home, argv) {
     let err = ''
     child.stdout.on('data', (c) => { out += c })
     child.stderr.on('data', (c) => { err += c })
-    child.on('close', (code) => done({ code, out, err }))
+    child.on('close', (code) => done({ code, out, err, json: () => JSON.parse(out) }))
   })
 }
 
@@ -358,4 +358,85 @@ test('the entry takes the field names of the client it is written for', () => {
   assert.deepEqual(directEntryFor('vscode', remote), { type: 'sse', url: 'https://mcp.example.com/sse' })
   assert.deepEqual(directEntryFor('zed', remote), { source: 'custom', command: null, url: 'https://mcp.example.com/sse' })
   assert.deepEqual(directEntryFor('windsurf', remote), { serverUrl: 'https://mcp.example.com/sse' })
+})
+
+test('a member the account already holds is still written, from the install route\'s answer', async () => {
+  const home = scratch()
+  const m = await marketplace((req) => {
+    if (req.url === '/api/cli/install') return { ok: true, unchanged: true, id: req.body.listing, url: `${m.host}/gw/${req.body.listing}/mcp`, variables: null }
+    return {
+      ok: true, stack: 's', name: 'S',
+      added: [{ id: 'fetch', url: `${m.host}/gw/fetch/mcp` }],
+      skipped: [{ id: 'github', name: 'GitHub', why: 'already installed' }],
+      direct: [], counts: { added: 1, direct: 0, skipped: 1 },
+    }
+  })
+  try {
+    const r = await run(m.host, home, ['stack', 'add', 's', '--client', 'claude-code'])
+    assert.equal(r.code, 0, r.err)
+    const servers = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers
+    assert.deepEqual(servers.github, { type: 'http', url: `${m.host}/gw/github/mcp`, headers: { Authorization: 'Bearer mk_test_key' } })
+    assert.ok(servers.fetch)
+    assert.match(r.out, /1 installed, 1 already on the account, written/)
+    assert.match(r.out, /\+ github/)
+    assert.ok(!/· github/.test(r.out), 'not listed as skipped as well')
+    const asked = m.seen.find((s) => s.url === '/api/cli/install')
+    assert.deepEqual(asked.body, { listing: 'github', client: 'claude-code' })
+
+    const j = await run(m.host, home, ['stack', 'add', 's', '--client', 'claude-code', '--json'])
+    const doc = j.json()
+    assert.deepEqual(doc.held, [{ id: 'github', url: `${m.host}/gw/github/mcp` }])
+    assert.deepEqual(doc.counts, { added: 1, direct: 0, skipped: 1, directWritten: 0, byHand: 0 }, 'counts keep their shape')
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a client this tool does not write is given the address beside each id, under the header line', async () => {
+  const home = scratch()
+  const m = await marketplace((req) => ({
+    ok: true, stack: 's', name: 'S',
+    added: [{ id: 'github', url: `${m.host}/gw/github/mcp` }], skipped: [], direct: [], counts: { added: 1, direct: 0, skipped: 0 },
+  }))
+  try {
+    const r = await run(m.host, home, ['stack', 'add', 's', '--client', 'codex'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /each address below goes with: Authorization: Bearer mk_test_key/)
+    assert.match(r.out, new RegExp(`\\+ github\\s+${m.host}/gw/github/mcp`))
+    assert.ok(!existsSync(join(home, '.claude.json')))
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('the file is refused before the stack route installs anything, and the alias reaches the server canonical', async () => {
+  const home = scratch()
+  const m = await marketplace((req) => ({ ok: true, stack: 's', name: 'S', added: [], skipped: [], direct: [], counts: { added: 0, direct: 0, skipped: 0 } }))
+  try {
+    writeFileSync(join(home, '.claude.json'), '{"mcpServers":[]}')
+    const r = await run(m.host, home, ['stack', 'add', 's', '--client', 'claude-code'])
+    assert.equal(r.code, 1)
+    assert.match(r.err, /is a list/)
+    assert.equal(m.seen.length, 0, 'the route that installs as it resolves was never called')
+    rmSync(join(home, '.claude.json'))
+
+    /* a linked config, likewise */
+    mkdirSync(join(home, '.cursor'), { recursive: true })
+    writeFileSync(join(home, 'elsewhere.json'), '{}')
+    symlinkSync(join(home, 'elsewhere.json'), join(home, '.cursor', 'mcp.json'))
+    const l = await run(m.host, home, ['stack', 'add', 's', '--client', 'cursor'])
+    assert.equal(l.code, 1)
+    assert.match(l.err, /symbolic link/)
+    assert.equal(m.seen.length, 0)
+
+    const a = await run(m.host, home, ['stack', 'add', 's', '--client', 'claude-desktop', '--json'])
+    assert.equal(a.code, 0, a.err)
+    assert.equal(m.seen[0].body.client, 'claude')
+    assert.equal(a.json().client, 'claude')
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
 })
