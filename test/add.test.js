@@ -460,3 +460,52 @@ test('a write that fails after the install was recorded names the install and th
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+
+test('a usage mistake is reported as usage, not as a missing key', async () => {
+  const home = scratch('mcprush-usage-')
+  const m = await marketplace(() => ({ ok: true }))
+  try {
+    for (const [argv, want] of [
+      [['stack', 'remove', 'x', '--json'], /takes `add`/],
+      [['stack', 'add', '--json'], /Which stack/],
+      [['add', '--json'], /Which server/],
+      [['add-list', '--json'], /Which list/],
+    ]) {
+      const r = await run(m.host, home, argv, { noKey: true })
+      assert.equal(r.code, 1, argv.join(' '))
+      const doc = r.json()
+      assert.equal(doc.ok, false)
+      assert.match(doc.error, want, argv.join(' '))
+      assert.ok(!/No key held/.test(doc.error), argv.join(' ') + ' must not blame the key')
+    }
+    assert.equal(m.seen.length, 0, 'no request reaches the server for a usage mistake')
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a batch row that failed carries the same status and wait as a single refusal', async () => {
+  const home = scratch('mcprush-batch-')
+  const m = await marketplace((req) => routes(m.host, {
+    '/api/cli/listing/goodone': () => server(m.host, 'goodone', { free: true }),
+    '/api/cli/install': () => installed(m.host, 'goodone'),
+    '/api/cli/listing/ratelimited': () => status(429, {
+      safe: true, error: 'That key has made too many requests — try again in about 37 seconds.',
+    }, { 'retry-after': '37' }),
+  })(req))
+  try {
+    const r = await run(m.host, home, ['add', 'goodone', 'ratelimited', '--client', 'claude-code', '--json'])
+    assert.equal(r.code, 1)
+    const doc = r.json()
+    assert.equal(doc.ok, false)
+    const row = (doc.failed || []).find((f) => f.name === 'ratelimited' || f.id === 'ratelimited')
+    assert.ok(row, 'the failed row is there: ' + JSON.stringify(doc.failed))
+    assert.equal(row.status, 429)
+    assert.equal(row.retryAfterSeconds, 37)
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})

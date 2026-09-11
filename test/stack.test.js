@@ -440,3 +440,33 @@ test('the file is refused before the stack route installs anything, and the alia
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+
+test('a held member the install route cannot answer for stops the command before any write', async () => {
+  const home = scratch()
+  const m = await marketplace((req) => {
+    if (req.url === '/api/cli/install') return status(429, {
+      safe: true, error: 'That key has made too many requests — try again in about 37 seconds.',
+    }, { 'retry-after': '37' })
+    return {
+      ok: true, stack: 's', name: 'S',
+      added: [{ id: 'fetch', url: `${m.host}/gw/fetch/mcp` }],
+      skipped: [{ id: 'github', name: 'GitHub', why: 'already installed' }],
+      direct: [], counts: { added: 1, direct: 0, skipped: 1 },
+    }
+  })
+  try {
+    const r = await run(m.host, home, ['stack', 'add', 's', '--client', 'claude-code', '--json'])
+    assert.equal(r.code, 1)
+    const doc = r.json()
+    assert.equal(doc.ok, false)
+    assert.equal(doc.status, 429)
+    assert.equal(doc.retryAfterSeconds, 37)
+    assert.deepEqual(doc.installed, ['fetch'], 'the new install is named, the held one is not')
+    assert.match(doc.error, /Nothing was written/)
+    assert.ok(!existsSync(join(home, '.claude.json')), 'no config written under a refusal')
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})

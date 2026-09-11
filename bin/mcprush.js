@@ -90,7 +90,7 @@ const emit = (obj, human) => {
 /* the addresses a refusal carries, for the failed[] rows of a batch: only the ones it has */
 const extrasOf = (err) => {
   const out = {}
-  for (const k of ['checkout', 'where', 'how']) if (err && err[k]) out[k] = err[k]
+  for (const k of ['checkout', 'where', 'how', 'status', 'retryAfterSeconds']) if (err && err[k] !== undefined && err[k] !== null && err[k] !== '') out[k] = err[k]
   return out
 }
 /* one refusal inside a batch, with its addresses under it, as the top-level catch prints one */
@@ -259,9 +259,11 @@ async function clients() {
    refusal on one name leaves the rest installed and sets a non-zero exit code. The client
    config is written once for the whole command: N writes are N chances to half rewrite it. */
 async function add() {
-  requireKey()
+  /* usage first, key second: a missing name is a mistake at the keyboard, and "no key held"
+     would send the person to the dashboard for an error that has nothing to do with a key */
   const names = args._.slice(1).filter((n) => typeof n === 'string' && n.length)
   if (!names.length) throw new Refused('Which server? `mcprush add <server>`')
+  requireKey()
   const clientId = await resolveClient()
   const single = names.length === 1
   /* --plan is parsed so a copied command does not fall over, but a tier is chosen at checkout. */
@@ -425,7 +427,9 @@ async function add() {
         d.replaced = Object.hasOwn(bucket, d.id)
         bucket[d.id] = entryFor(client.shape, d.url, key())
       }
-    }, done))
+    /* the undo advice names what THIS run put on the account: a row the account already
+       held (unchanged) is not something a failed write should tell the person to remove */
+    }, done.filter((d) => !d.unchanged)))
   }
   const ignoredFlags = []
   if (planAsked) ignoredFlags.push({ flag: 'plan', value: planAsked, why: 'a plan is chosen at checkout' })
@@ -494,11 +498,11 @@ async function add() {
    with the reason. Every one of the twenty curated stacks on the catalogue is made of direct
    members, so until they were written this command installed nothing from any of them. */
 async function stack() {
-  requireKey()
   /* `stack remove x` was read as a stack called `remove`: one wasted request and a wrong answer */
   if (args._[1] !== 'add') throw new Refused('`mcprush stack` takes `add`: mcprush stack add <stack>')
   const name = args._[2]
   if (!name) throw new Refused('Which stack? `mcprush stack add <stack>`')
+  requireKey()
   const clientId = await resolveClient()
   const client = clientOf(clientId)
 
@@ -537,8 +541,17 @@ async function stack() {
       const again = await api.install(String(sk.id), clientId)
       held.push({ id: String(sk.id), url: again && again.url })
     } catch (err) {
-      /* a member that cannot be re-installed — a direct one with an old row — is named, not fatal */
-      sk.why = 'already installed — ' + String(err?.message || err).slice(0, 120)
+      /* a member that cannot be re-installed — a direct one with an old row, which the route
+         refuses with 409 — is named, not fatal. Anything else (a rate limit, a restart, the
+         network) stops the command here, before any write: folding it into `why` left the
+         member out of the config under a green tick and exit 0 (re-check 12 Sep 2026). */
+      if (err && err.status === 409) { sk.why = 'already installed — ' + String(err?.message || err).slice(0, 120); continue }
+      const fresh = res.added.map((a) => String(a.id))
+      throw Object.assign(new Refused(
+        `${res.name || name}: \`${String(sk.id).slice(0, 40)}\` is already on your account but could not be re-installed just now — `
+        + `${String(err?.message || err).slice(0, 160)} Nothing was written to ${client ? client.name : clientId}`
+        + (fresh.length ? `; the ${fresh.length === 1 ? 'new install is' : fresh.length + ' new installs are'} on your account (${fresh.join(', ')}). Run the command again once it answers.` : '. Run the command again once it answers.')),
+      { status: err?.status, retryAfterSeconds: err?.retryAfterSeconds, installed: fresh })
     }
   }
   const gateway = [...res.added, ...held]
@@ -592,7 +605,8 @@ async function stack() {
         d.replaced = Object.hasOwn(bucket, d.key)
         bucket[d.key] = d.entry
       }
-    }, gateway))
+    /* only this run's new installs: a held member was on the account before the command */
+    }, res.added))
   }
 
   /* `skipped` still carries every direct member, as the server sends it for the 0.1.3
@@ -650,9 +664,9 @@ async function stack() {
 }
 
 async function addList() {
-  requireKey()
   const name = args._[1]
   if (!name) throw new Refused('Which list? `mcprush add-list <list>`')
+  requireKey()
   const clientId = await resolveClient()
   const client = clientOf(clientId)
 
