@@ -5,7 +5,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
-import { mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, symlinkSync, chmodSync } from 'node:fs'
+import { mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, symlinkSync, chmodSync, utimesSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
 import { marketplace, run, scratch, status, server, installed, CLIENT_ROWS } from './harness.js'
 
@@ -568,6 +568,71 @@ test('a dry run that could not do everything answers ok:false, like every other 
     const good = await run(m.host, home, ['add', 'gw1', '--client', 'claude-code', '--dry-run', '--json'])
     assert.equal(good.code, 0)
     assert.equal(good.json().ok, true)
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('two runs at once do not lose each other\'s entry', async () => {
+  const home = scratch('mcprush-race-')
+  writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: {}, projects: {} }, null, 2))
+  const m = await marketplace((req) => routes(m.host, {
+    /* the window the race used to live in: the config is read before this answer and written after */
+    '/api/cli/install': async () => { await new Promise((r) => setTimeout(r, 250)); return installed(m.host, 'x') },
+  })(req))
+  try {
+    const [a, b] = await Promise.all([
+      run(m.host, home, ['add', 'one', '--client', 'claude-code', '--json']),
+      run(m.host, home, ['add', 'two', '--client', 'claude-code', '--json']),
+    ])
+    const servers = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers
+    for (const [r, id] of [[a, 'one'], [b, 'two']]) {
+      if (r.code !== 0) {
+        /* the honest alternative: it refused because the other run held the file */
+        assert.match(r.json().error, /being written by another mcprush/, id)
+        continue
+      }
+      assert.ok(servers[id], `${id} reported written (${r.out.slice(0, 120)}) and is in the file`)
+    }
+    assert.ok(!existsSync(join(home, '.claude.json.lock')), 'the lock is not left behind')
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a stale lock older than a minute is broken rather than obeyed', async () => {
+  const home = scratch('mcprush-stale-')
+  writeFileSync(join(home, '.claude.json'), '{"mcpServers":{}}')
+  const lock = join(home, '.claude.json.lock')
+  writeFileSync(lock, '999999\n')
+  const old = new Date(Date.now() - 5 * 60_000)
+  utimesSync(lock, old, old)
+  const m = await marketplace((req) => routes(m.host)(req))
+  try {
+    const r = await run(m.host, home, ['add', 'alpha', '--client', 'claude-code', '--json'])
+    assert.equal(r.code, 0, r.err || r.out)
+    assert.ok(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers.alpha)
+    assert.ok(!existsSync(lock), 'and it is not left behind either')
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('the key store is written beside and renamed, and a link in its place is refused', async () => {
+  const home = scratch('mcprush-keystore-')
+  const victim = join(home, 'victim.json')
+  writeFileSync(victim, 'MINE\n')
+  mkdirSync(join(home, '.mcprush'))
+  symlinkSync(victim, join(home, '.mcprush', 'config.json'))
+  const m = await marketplace(() => ({ email: 'me@example.com', plan: 'Free', key: { label: 'k', scope: 'buyer' }, installs: 0, calls30: 0 }))
+  try {
+    const r = await run(m.host, home, ['login', 'mk_good', '--json'], { noKey: true })
+    assert.equal(r.code, 1)
+    assert.match(r.json().error, /symbolic link/)
+    assert.equal(readFileSync(victim, 'utf8'), 'MINE\n', 'the file the link pointed at is untouched')
   } finally {
     await m.close()
     rmSync(home, { recursive: true, force: true })

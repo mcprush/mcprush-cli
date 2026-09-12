@@ -11,6 +11,27 @@ reproduced against a marketplace answering like the real one and confirmed by
 a second reader trying to disprove it — and what was done about them. Nothing
 here is published yet; the release goes out with the fixes.
 
+### Fixed (second re-check, 12 Sep 2026)
+- Two runs at once no longer lose each other's work: the read-modify-write of a
+  client config is held under an exclusive lock beside the file, a lock older
+  than a minute is treated as abandoned, and a run that cannot take it refuses
+  in words instead of printing a tick over an entry that is not there.
+- `remove` proves the entry is one it wrote against the same bytes it deletes
+  from, not against the copy it read before the network.
+- `--json` reports `forced` only when `--force` actually took out an entry that
+  was not ours.
+- `skill add` records in its manifest the path it wrote, not the path it was
+  given, so a marketplace spelling a file `./SKILL.md` cannot leave `skill
+  remove` unable to recognise its own files.
+- `skill remove` of a folder that is not a folder is a sentence, not a stack
+  trace.
+- The key store is written beside and renamed, and a symbolic link in its place
+  is refused — the same care the client configs already had.
+- A usage mistake in `remove`, `uninstall` and `budget` is reported as usage;
+  the key is asked for where the account is actually touched.
+- `add-list`'s undo advice after a failed write names only what that run
+  installed, and a dry run that refused a name answers `ok: false`.
+
 ### Security
 
 - **`remove` deleted any same-named entry before asking the server.** A

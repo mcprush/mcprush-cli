@@ -10,7 +10,7 @@ import {
 import { createHash } from 'node:crypto'
 import { createInterface } from 'node:readline/promises'
 import { fileURLToPath } from 'node:url'
-import { join, dirname } from 'node:path'
+import { join, dirname, relative, sep } from 'node:path'
 import {
   readConfig, writeConfig, host, key, CONFIG_FILE,
   CLIENTS, clientOf, canonicalClient, KNOWN_CLIENTS, entryFor, readClientFile, updateClientFile,
@@ -915,6 +915,15 @@ async function remove() {
     try {
       ({ file: removedFrom, notes } = updateClientFile(client, (fresh) => {
         const b = atPath(fresh, client.at)
+        /* ПРОВЕРКА НА ТЕХ ЖЕ БАЙТАХ, ЧТО И УДАЛЕНИЕ. Владение решалось по копии,
+           прочитанной до сети, а удаляется из свежей: между ними клиент (или
+           человек) мог переписать запись своей, и та уходила без спроса
+           (встречная проверка 12 сен 2026). */
+        if (!FORCE && Object.hasOwn(b, entryKey) && !ownEntry(b[entryKey])) {
+          throw new Refused(
+            `${entryKey} in ${client.name} (${client.file}) changed while this ran and is no longer an entry `
+            + 'this tool wrote. Nothing was taken out of the config — look at it, then pass --force if it should go.')
+        }
         if (Object.hasOwn(b, entryKey)) delete b[entryKey]
         /* `remove` rewrites the same file `add` does, so the key swap belongs here too. */
         scrubLiteralKey(client, fresh, key())
@@ -927,9 +936,12 @@ async function remove() {
         : ''), extrasOf(err))
     }
   }
-  emit({ ok: true, id, removedFrom, account, ...(ours ? {} : { forced: true }) }, () => {
+  /* «forced» — только когда сила и правда понадобилась: запись была, была не
+     нашей и её всё равно сняли. Без записи в конфиге поле лгало скриптам. */
+  const forced = FORCE && !!entry && !ours
+  emit({ ok: true, id, removedFrom, account, ...(forced ? { forced: true } : {}) }, () => {
     say(green('✓') + ` ${id} removed`)
-    if (removedFrom) say(dim(`  out of ${client.name}: ${removedFrom}${ours ? '' : ' (--force: not an entry of ours)'}`))
+    if (removedFrom) say(dim(`  out of ${client.name}: ${removedFrom}${forced ? ' (--force: not an entry of ours)' : ''}`))
     if (account) say(dim('  uninstalled on the account — the gateway will refuse calls to it now'))
     else say(dim(`  not on the account (${offAccount}) — only the client entry was removed`))
     for (const n of notes || []) say(dim(`  ${n}`))
@@ -971,6 +983,10 @@ function readManifest(dir) {
 
 /* every file under a folder, as `/`-joined paths relative to it; a symlink is listed, never followed */
 function filesUnder(dir) {
+  const at = lstatSync(dir, { throwIfNoEntry: false })
+  if (at && !at.isDirectory()) {
+    throw new Refused(`${dir} is not a folder, so there is nothing to read there. Nothing was deleted.`)
+  }
   const out = []
   const walk = (at, rel) => {
     for (const entry of readdirSync(at)) {
@@ -1134,6 +1150,11 @@ function skillRemove(listing, where, quiet) {
     rmSync(where.dir, { recursive: true, force: true })
   } else {
     for (const rel of plan.ours) unlinkSync(join(where.dir, rel))
+    /* ОПИСЬ УХОДИТ ВМЕСТЕ С НАШИМИ ФАЙЛАМИ. Оставшаяся папка — ваша: в ней
+       только то, что вы добавили или правили. Повторный `skill add` её не
+       перепишет молча (он меняет папку целиком) и скажет, что делать: убрать
+       своё или передать --force. Пустая опись этого не меняла, только
+       притворялась бы, что скилл ещё тут. */
     rmSync(join(where.dir, MANIFEST), { force: true })
     pruneEmpty(where.dir)
   }
@@ -1252,7 +1273,11 @@ async function skillAdd(listing, where, clientId, quiet) {
       mkdirSync(dirname(at), { recursive: true })
       if (!realInside(tmp, at)) throw new Refused(`\`${plan[i]}\` resolves outside ${tmp} — a symlink in the way.`)
       writeFileSync(at, bodies[i], { flag: 'wx' })
-      written.push({ path: plan[i], sha256: sha256(bodies[i]) })
+      /* ЗАПИСЫВАЕТСЯ ТО, ЧТО ЛЕГЛО НА ДИСК, А НЕ ТО, ЧТО ПРОСИЛИ. `./SKILL.md`
+         и `docs/../docs/ref.md` ложатся как `SKILL.md` и `docs/ref.md`, а в
+         опись шли дословно — и снятие потом не узнавало собственные файлы,
+         оставляя их навсегда «вашими» (встречная проверка 12 сен 2026). */
+      written.push({ path: relative(tmp, at).split(sep).join('/'), sha256: sha256(bodies[i]) })
     }
     writeFileSync(join(tmp, MANIFEST), JSON.stringify({
       tool: 'mcprush', id: listing.id, version: listing.version ?? listed.version ?? null, files: written,
