@@ -4,12 +4,14 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions
 follow [semver](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.4] — 2026-09-11
+## [0.1.4] — 2026-09-12
 
-An adversarial audit of 0.1.4 as it stood — thirty-seven findings, each
+An adversarial audit of the tool as it stood — thirty-seven findings, each
 reproduced against a marketplace answering like the real one and confirmed by
-a second reader trying to disprove it — and what was done about them. Nothing
-here is published yet; the release goes out with the fixes.
+a second reader trying to disprove it — then two re-checks of the fixes
+themselves, which found seven more and then six more. This release carries all
+of them, and `stack add` finally installs the members every curated set is
+actually made of.
 
 ### Fixed (second re-check, 12 Sep 2026)
 - Two runs at once no longer lose each other's work: the read-modify-write of a
