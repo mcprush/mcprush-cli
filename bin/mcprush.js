@@ -365,7 +365,7 @@ async function add() {
 
   /* Before the "client we do not write" branch, which knows nothing of DRY and would install. */
   if (!client && DRY) {
-    emit({ dryRun: true, client: clientId, wrote: null, installed: done, failed }, () => {
+    emit({ ok: !failed.length, dryRun: true, client: clientId, wrote: null, installed: done, failed }, () => {
       say(dim('nothing was written and nothing was installed — this is what would happen:'))
       for (const d of done) say(`  ${d.id} → ${d.url} (pasted into ${clientId} by hand)`)
       for (const f of failed) complain(f.name, f)
@@ -403,7 +403,7 @@ async function add() {
   }
 
   if (DRY) {
-    emit({ dryRun: true, file: client.file, unreadable, installed: done, failed }, () => {
+    emit({ ok: !failed.length, dryRun: true, file: client.file, unreadable, installed: done, failed }, () => {
       say(dim('nothing was written — this is what would be:'))
       say(`  ${client.file}`)
       if (unreadable) say(red('  and it would not be, as things stand: ') + String(unreadable).split('\n')[0])
@@ -718,6 +718,8 @@ async function addList() {
         id: listingId,
         url: (installed && checkedUrl(installed.url)) || listedAt,
         variables: (installed && installed.variables) || null,
+        /* the account already held it: a failed write must not tell the person to take it off */
+        unchanged: !!(installed && installed.unchanged),
       })
     } catch (err) {
       /* a real error is not a skip either — whole, with the addresses the server sent */
@@ -729,10 +731,11 @@ async function addList() {
   if (client && added.length && !DRY) {
     ({ file: wrote, notes } = writeEntries(client, (bucket) => {
       for (const a of added) bucket[a.id] = entryFor(client.shape, a.url, key())
-    }, added))
+    /* only this run's new installs, as add() and stack add do */
+    }, added.filter((a) => !a.unchanged)))
   }
   if (DRY) {
-    emit({ dryRun: true, list: found.list, would: added, skipped, failed, file: client ? client.file : null }, () => {
+    emit({ ok: !failed.length, dryRun: true, list: found.list, would: added, skipped, failed, file: client ? client.file : null }, () => {
       say(dim('nothing was written — this is what would be:'))
       if (client) say(`  ${client.file}`)
       for (const a of added) say(`  ${a.id} → ${a.url}`)
@@ -765,7 +768,8 @@ async function addList() {
 }
 
 async function budget() {
-  requireKey()
+  /* The key is asked for where the account is actually touched, below: a mistyped amount is
+     a mistake at the keyboard and must not be reported as a missing key. */
   /* The ceiling is one per account: a listing name would look per-listing and cap the lot. */
   if (args._[1]) {
     throw new Refused(
@@ -788,6 +792,7 @@ async function budget() {
   const wantMax = args.flags.max
   const wantAlert = args.flags.alert
   if (wantMax === undefined && wantAlert === undefined) {
+    requireKey()
     const now = await api.budget()
     emit(now, () => say(`${bold(money(now.maxCents))} a month · alert at ${now.alertPct}% (${money(now.alertCents)})`))
     return
@@ -816,6 +821,7 @@ async function budget() {
     })
     return
   }
+  requireKey()
   const set = await api.budget({ maxCents, alertPct })
   emit(set, () => {
     say(green('✓') + ` ${money(set.maxCents)} a month · alert at ${set.alertPct}%`)
@@ -832,10 +838,12 @@ async function budget() {
    an address at our origin — or it is left alone, the server is asked before anything is
    deleted, and the file is rewritten only when the account has nothing left to say. */
 async function remove() {
-  requireKey()
+  /* usage first, key second — as in add(): a missing name is a mistake at the keyboard, and
+     "no key held" sends the person to the dashboard for an error about no key at all */
   const name = args._[1]
   if (!name) throw new Refused('Which server? `mcprush remove <server>`')
   const clientId = await resolveClient()
+  requireKey()
   const client = clientOf(clientId)
 
   /* the pre-flight: a link, a file that is not JSON — refused before the account is touched */
@@ -1033,7 +1041,7 @@ async function skill() {
     }
     const bad = results.filter((r) => !r.ok)
     /* A dry run does not draw the tick that marks a real write to disk. */
-    emit({ ...(DRY ? { dryRun: true } : { ok: !bad.length }), skills: results }, () => {
+    emit({ ok: !bad.length, ...(DRY ? { dryRun: true } : {}), skills: results }, () => {
       if (DRY) say(dim('nothing was written — this is what would be:'))
       for (const r of results) {
         if (!r.ok) continue

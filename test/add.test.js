@@ -471,6 +471,11 @@ test('a usage mistake is reported as usage, not as a missing key', async () => {
       [['stack', 'add', '--json'], /Which stack/],
       [['add', '--json'], /Which server/],
       [['add-list', '--json'], /Which list/],
+      [['remove', '--json'], /Which server/],
+      [['uninstall', '--json'], /Which server/],
+      [['budget', 'github', '--json'], /not per listing/],
+      [['budget', '--max', 'abc', '--json'], /not an amount/],
+      [['budget', '--alert', '250', '--json'], /between 1 and 100/],
     ]) {
       const r = await run(m.host, home, argv, { noKey: true })
       assert.equal(r.code, 1, argv.join(' '))
@@ -504,6 +509,65 @@ test('a batch row that failed carries the same status and wait as a single refus
     assert.ok(row, 'the failed row is there: ' + JSON.stringify(doc.failed))
     assert.equal(row.status, 429)
     assert.equal(row.retryAfterSeconds, 37)
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+
+test('add-list: a member the account already held is not named in the undo after a failed write', async () => {
+  if (process.getuid && process.getuid() === 0) return
+  const home = scratch('mcprush-listundo-')
+  const dir = join(home, '.cursor')
+  mkdirSync(dir)
+  writeFileSync(join(dir, 'mcp.json'), '{"mcpServers":{}}')
+  const m = await marketplace((req) => {
+    if (req.url === '/api/cli/list-add') {
+      return { ok: true, list: 'mine', items: ['held', 'fresh'] }
+    }
+    if (req.url === '/api/cli/listing/held') return server(m.host, 'held', { free: true, installed: true })
+    if (req.url === '/api/cli/listing/fresh') return server(m.host, 'fresh', { free: true })
+    if (req.url === '/api/cli/install') {
+      /* the folder turns read-only while the second install is in flight */
+      if (req.body.listing === 'fresh') chmodSync(dir, 0o555)
+      return installed(m.host, req.body.listing, req.body.listing === 'held' ? { unchanged: true } : {})
+    }
+    return routes(m.host)(req)
+  })
+  try {
+    const r = await run(m.host, home, ['add-list', 'mine', '--client', 'cursor', '--json'])
+    chmodSync(dir, 0o755)
+    assert.equal(r.code, 1)
+    const doc = r.json()
+    assert.equal(doc.ok, false)
+    assert.match(doc.error, /could not be written/)
+    assert.deepEqual(doc.installed, ['fresh'], 'the held member is not named as this run\'s install')
+    assert.match(doc.error, /`mcprush remove fresh`/)
+    assert.ok(!/remove held/.test(doc.error), 'and the undo never offers to take off what was already there')
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a dry run that could not do everything answers ok:false, like every other error path', async () => {
+  const home = scratch('mcprush-dryok-')
+  const m = await marketplace((req) => routes(m.host, {
+    '/api/cli/listing/gw1': () => server(m.host, 'gw1', { free: true }),
+    '/api/cli/listing/paid': () => server(m.host, 'paid', { free: false, priceType: 'one_time', installed: false }),
+  })(req))
+  try {
+    const r = await run(m.host, home, ['add', 'gw1', 'paid', '--client', 'claude-code', '--dry-run', '--json'])
+    assert.equal(r.code, 1)
+    const doc = r.json()
+    assert.equal(doc.ok, false, 'a dry run with a refused name is not a success')
+    assert.equal(doc.dryRun, true)
+    assert.equal(doc.failed.length, 1)
+
+    const good = await run(m.host, home, ['add', 'gw1', '--client', 'claude-code', '--dry-run', '--json'])
+    assert.equal(good.code, 0)
+    assert.equal(good.json().ok, true)
   } finally {
     await m.close()
     rmSync(home, { recursive: true, force: true })
