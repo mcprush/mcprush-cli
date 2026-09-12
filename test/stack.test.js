@@ -73,7 +73,14 @@ function run(host, home, argv) {
   return new Promise((done) => {
     const child = spawn(process.execPath, [BIN, ...argv], {
       cwd: home,
-      env: { ...process.env, HOME: home, MCPRUSH_HOST: host, MCPRUSH_KEY: 'mk_test_key', NO_COLOR: '1' },
+      /* XDG_CONFIG_HOME too: Zed's path comes from it on Linux, and a runner
+         that exports its own sent the write outside this scratch HOME */
+      env: (() => {
+        const e = { ...process.env, HOME: home, MCPRUSH_HOST: host, MCPRUSH_KEY: 'mk_test_key', NO_COLOR: '1',
+          XDG_CONFIG_HOME: join(home, '.config') }
+        delete e.FLATPAK_XDG_CONFIG_HOME
+        return e
+      })(),
     })
     let out = ''
     let err = ''

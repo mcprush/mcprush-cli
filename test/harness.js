@@ -51,7 +51,16 @@ export function marketplace(answer, bind = '127.0.0.1') {
    `opts.noKey`. */
 export function run(host, home, argv, opts = {}) {
   return new Promise((done) => {
-    const env = { ...process.env, HOME: home, MCPRUSH_HOST: host, MCPRUSH_KEY: 'mk_test_key', NO_COLOR: '1', ...(opts.env || {}) }
+    const env = { ...process.env, HOME: home, MCPRUSH_HOST: host, MCPRUSH_KEY: 'mk_test_key', NO_COLOR: '1',
+      /* A SCRATCH HOME IS NOT ENOUGH ON LINUX. Zed's file is XDG_CONFIG_HOME's
+         business, and the tool honours that — so a runner that exports
+         XDG_CONFIG_HOME=/home/runner/.config (GitHub's do) sent the write out
+         of the scratch folder and two tests read an empty file where their own
+         fixture was. The fake machine has to own every variable a path is
+         derived from, not just HOME. */
+      XDG_CONFIG_HOME: join(home, '.config'),
+      ...(opts.env || {}) }
+    delete env.FLATPAK_XDG_CONFIG_HOME
     if (opts.noKey) delete env.MCPRUSH_KEY
     const child = spawn(process.execPath, [BIN, ...argv], { cwd: opts.cwd || home, env })
     let out = ''
