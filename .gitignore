@@ -1,0 +1,11 @@
+node_modules/
+*.tgz
+.DS_Store
+.env
+.env.*
+npm-debug.log*
+
+# local tooling and editor state, never part of a release
+.claude/
+.vscode/
+.idea/
