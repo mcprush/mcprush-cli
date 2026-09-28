@@ -30,7 +30,11 @@ export function marketplace(answer, bind = '127.0.0.1') {
       const reply = out && typeof out === 'object' && '$status' in out ? out : { $status: 200, $body: out, $headers: {} }
       res.statusCode = reply.$status
       for (const [k, v] of Object.entries(reply.$headers || {})) res.setHeader(k, v)
-      if (typeof reply.$body === 'string') {
+      /* bytes are bytes: a skill's bundle.tar.gz */
+      if (Buffer.isBuffer(reply.$body)) {
+        if (!res.getHeader('content-type')) res.setHeader('content-type', 'application/gzip')
+        res.end(reply.$body)
+      } else if (typeof reply.$body === 'string') {
         res.setHeader('content-type', 'text/plain; charset=utf-8')
         res.end(reply.$body)
       } else {

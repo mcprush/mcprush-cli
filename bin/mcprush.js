@@ -16,9 +16,10 @@ import {
   atPath, skillDirFor, ensureInputs, checkInputs, dropUnusedInput, insideDir, realInside, scrubLiteralKey, checkedUrl,
   safeEntryKey, ownEntry, checkWritable, directStart, directEntryFor, directEntryOurs, legacyEntriesFor, entryLine, sameLaunch,
   ENV_PLACEHOLDER, BRIDGE_SPEC,
-  printable, workspaceNote, NO_SKILL_FOLDER,
+  printable, workspaceNote, NO_SKILL_FOLDER, heldKey, putKey,
 } from '../lib/config.js'
-import { api, skillFile, Refused, parseRef } from '../lib/api.js'
+import { api, skillFile, skillBundle, Refused, parseRef } from '../lib/api.js'
+import { untarGz } from '../lib/tar.js'
 import { parse, boolFlag, unknownFlags } from '../lib/args.js'
 
 const VERSION = JSON.parse(
@@ -41,6 +42,8 @@ const said = (t) => printable(t, 4000)
 const HELP = `${bold('mcprush')} ${dim(VERSION)} — install MCP servers from mcprush.com
 
   ${bold('mcprush login')}                 hold a key from your dashboard (asked for, or piped in)
+  ${bold('mcprush relink')}                put the key held now into every entry this tool wrote
+  ${bold('mcprush logout')}                forget the key, and say which entries still carry it
   ${bold('mcprush add')} <server>…        install one or more, into a client
   ${bold('mcprush remove')} <server>       take it out again
   ${bold('mcprush skill add')} <skill>      write a skill's folder to disk
@@ -321,14 +324,22 @@ async function login() {
   if (pinned) conf.host = pinned
   else delete conf.host
   writeConfig(conf)
+  /* entries this tool wrote with another key — the one this login replaces, most likely — go on
+     getting 401 until they carry this one; `relink` does that, and is named here (K37) */
+  let stale = 0
+  try { stale = keyedEntries(Object.keys(CLIENTS)).found.filter((f) => f.token !== given).length } catch { stale = 0 }
   emit({ ok: true, account: me.email, plan: me.plan, config: CONFIG_FILE, host: pinned || null,
-    ...(dropped ? { unpinned: dropped } : {}) }, () => {
+    ...(dropped ? { unpinned: dropped } : {}), ...(stale ? { staleEntries: stale } : {}) }, () => {
     say(green('✓') + ` ${safe(me.email)} · ${safe(me.plan) || 'no plan'}`)
     say(dim(`  key saved in ${CONFIG_FILE}, readable only by you`))
     if (pinned) say(dim(`  and this machine will talk to ${pinned} until you log in again without --host`))
     if (dropped) say(dim(`  the pin to ${safe(dropped)} is dropped: this machine talks to ${nowTalks} again`))
     if (process.env.MCPRUSH_KEY && process.env.MCPRUSH_KEY !== given) {
       say(dim('  note: MCPRUSH_KEY is set in this shell and takes precedence over the key just saved'))
+    }
+    if (stale) {
+      say(dim(`  ${stale} entr${stale === 1 ? 'y' : 'ies'} this tool wrote carr${stale === 1 ? 'ies' : 'y'} another key — `
+        + '`mcprush relink` puts this one in them'))
     }
     if (me.suspended) say(red('  this account is suspended — installs and calls are closed'))
   })
@@ -358,6 +369,145 @@ async function whoami() {
     } else if (me.key.expires === null) bits.push('does not expire')
     if (typeof me.key.role === 'string' && me.key.role) bits.push(`minted from ${/^[aeiou]/i.test(me.key.role) ? 'an' : 'a'} ${safe(me.key.role)} seat`)
     if (bits.length) say(dim(`  ${bits.join(' · ')}`))
+  })
+}
+
+/* ---- the key in the clients this tool wrote (K37) ------------------------------------------
+   Every entry `add`, `add-list` and `stack add` wrote into Claude Code, Claude Desktop, Cursor,
+   Windsurf or Zed carries the key it was written with (VS Code's names ${input:mcprush-key} and
+   holds none). When that key is rotated, revoked or expires, every one of those entries starts
+   getting 401 from the gateway, and the only way out was to find each file and edit each entry
+   by hand. `relink` puts the key this tool holds now into every entry of ours; `logout` forgets
+   the key and names the entries that still carry it, because forgetting it here does not stop
+   them. Files that do not exist are not created, and an entry this tool did not write is never
+   read for a key, let alone changed. */
+function keyedEntries(ids) {
+  const found = []
+  const unreadable = []
+  for (const id of ids) {
+    const client = CLIENTS[id]
+    if (!client || !existsSync(client.file)) continue
+    let bucket
+    try {
+      bucket = atPath(readClientFile(client), client.at)
+    } catch (err) {
+      unreadable.push({ client: id, file: client.file, error: err?.message || String(err) })
+      continue
+    }
+    for (const [name, entry] of Object.entries(bucket)) {
+      if (!ownEntry(entry)) continue
+      const held = heldKey(entry)
+      if (held) found.push({ client: id, name: client.name, file: client.file, entry: name, token: held.token })
+    }
+  }
+  return { found, unreadable }
+}
+/* one line per client: "Claude Code (~/.claude.json): github, notion" */
+const perClient = (rows) => {
+  const by = new Map()
+  for (const r of rows) {
+    const k = r.client
+    if (!by.has(k)) by.set(k, { client: r.client, name: r.name, file: r.file, entries: [] })
+    by.get(k).entries.push(r.entry)
+  }
+  return [...by.values()]
+}
+
+async function logout() {
+  const conf = readConfig()
+  const had = typeof conf.key === 'string' && conf.key ? conf.key : null
+  const { found } = had ? keyedEntries(Object.keys(CLIENTS)) : { found: [] }
+  const still = perClient(found.filter((f) => f.token === had))
+  const out = { config: CONFIG_FILE, forgot: !!had, ...(conf.host ? { unpinned: conf.host } : {}), stillIn: still.map(({ client, file, entries }) => ({ client, file, entries })) }
+  const tell = () => {
+    if (still.length) {
+      const n = still.reduce((a, c) => a + c.entries.length, 0)
+      say(dim(`  ${n} entr${n === 1 ? 'y' : 'ies'} this tool wrote still carr${n === 1 ? 'ies' : 'y'} that key and keep working until it is revoked at ${host()}/dashboard#access:`))
+      for (const c of still) say(dim(`    ${c.name} (${c.file}): ${safe(c.entries.join(', '))}`))
+    }
+    if (process.env.MCPRUSH_KEY) say(dim('  note: MCPRUSH_KEY is set in this shell, and commands still use it'))
+  }
+  if (DRY) {
+    emit({ dryRun: true, ...out }, () => {
+      say(dim('nothing was changed — this is what would happen:'))
+      say(had ? `  the key saved in ${CONFIG_FILE} would be forgotten` : `  no key is saved in ${CONFIG_FILE}, so there is nothing to forget`)
+      tell()
+    })
+    return
+  }
+  if (had || conf.host) {
+    const next = { ...conf }
+    delete next.key
+    delete next.host
+    writeConfig(next)
+  }
+  emit({ ok: true, ...out }, () => {
+    say(had ? green('✓') + ` key forgotten — ${CONFIG_FILE}` : dim(`No key was saved in ${CONFIG_FILE}; nothing to forget.`))
+    if (conf.host) say(dim(`  and the pin to ${safe(conf.host)} with it: this machine talks to ${DEFAULT_HOST} again`))
+    tell()
+  })
+}
+
+async function relink() {
+  requireKey()
+  const token = key()
+  const named = typeof args.flags.client === 'string'
+  const only = named ? await resolveClient() : null
+  if (only && !CLIENTS[only]) {
+    throw new Refused(`${only} is a client this tool does not write, so there is no entry of ours in it to relink.`)
+  }
+  const ids = only ? [only] : Object.keys(CLIENTS)
+  /* The key is checked before it is written into anybody's config: relinking entries to a key
+     that is itself dead turns one kind of 401 into another. */
+  const me = await api.whoami()
+  if (!me || typeof me.email !== 'string' || !me.key) {
+    throw new Refused(`${host()} answered without an account on it, so the key was not written anywhere. `
+      + 'Log in with a live key first: `mcprush login`.')
+  }
+  const { found, unreadable } = keyedEntries(ids)
+  const stale = perClient(found.filter((f) => f.token !== token))
+  const already = found.filter((f) => f.token === token).length
+  if (DRY) {
+    emit({ dryRun: true, account: me.email, would: stale.map(({ client, file, entries }) => ({ client, file, entries })), already, unreadable }, () => {
+      say(dim('nothing was written — this is what would be:'))
+      if (!stale.length) say(`  no entry of ours carries another key${already ? ` (${already} already carr${already === 1 ? 'ies' : 'y'} this one)` : ''}`)
+      for (const c of stale) say(`  ${c.name} (${c.file}): ${safe(c.entries.join(', '))}`)
+      for (const u of unreadable) say(red(`  ${u.file} could not be read: ${said(u.error)}`))
+    })
+    return
+  }
+  const done = []
+  const failed = []
+  for (const c of stale) {
+    const client = CLIENTS[c.client]
+    const changed = []
+    try {
+      updateClientFile(client, (fresh) => {
+        const bucket = atPath(fresh, client.at)
+        for (const name of c.entries) {
+          const entry = bucket[name]
+          /* read again on the bytes that are written: an entry the person rewrote in between
+             is theirs now, and it is left as it is */
+          if (!ownEntry(entry)) continue
+          const held = heldKey(entry)
+          if (!held || held.token === token) continue
+          if (putKey(entry, token)) changed.push(name)
+        }
+      })
+      done.push({ client: c.client, file: c.file, entries: changed })
+    } catch (err) {
+      failed.push({ client: c.client, file: c.file, error: err?.message || String(err) })
+    }
+  }
+  if (failed.length || unreadable.length) process.exitCode = 1
+  emit({ ok: !failed.length, account: me.email, relinked: done, already, failed, unreadable }, () => {
+    const n = done.reduce((a, c) => a + c.entries.length, 0)
+    if (!stale.length) say(green('✓') + ` nothing to relink — no entry of ours carries another key${already ? ` (${already} already carr${already === 1 ? 'ies' : 'y'} this one)` : ''}`)
+    else say(green('✓') + ` ${n} entr${n === 1 ? 'y' : 'ies'} now carr${n === 1 ? 'ies' : 'y'} the key of ${safe(me.email)}`)
+    for (const c of done) if (c.entries.length) say(dim(`  ${CLIENTS[c.client].name} (${c.file}): ${safe(c.entries.join(', '))}`))
+    for (const f of failed) complain(`${CLIENTS[f.client].name} (${f.file})`, { error: f.error })
+    for (const u of unreadable) complain(u.file, { error: u.error })
+    if (n) say(dim('  restart the clients to pick it up; the old key stays in each file\'s .bak until the next write'))
   })
 }
 
@@ -1177,13 +1327,15 @@ async function remove() {
   }
 
   /* Both forms resolve, as in `add`. A listing gone from the storefront (404) is still taken
-     out under its raw key, which is what an entry for it was written under. */
+     out under its raw key, which is what an entry for it was written under — and so is a frozen
+     one the account no longer holds, which the marketplace answers 409 (CA-5): `remove` stopped
+     there and left the entry in the file, for a listing already off the account. */
   let id = name
   try {
     const listing = await api.listingRef(name)
     if (listing && typeof listing.id === 'string' && listing.id) id = listing.id
   } catch (err) {
-    if (!(err instanceof Refused) || err.status !== 404) throw err
+    if (!(err instanceof Refused) || (err.status !== 404 && err.status !== 409)) throw err
   }
   /* The key is checked as `add` checks it: `toString` and `__proto__` were found on the
      prototype, the file was rewritten for nothing, and the tick said an entry came out. */
@@ -1563,6 +1715,25 @@ async function skillRemove(listing, where, quiet, ctx) {
   })
 }
 
+/* The planned files out of the skill's archive, as text in plan order — or null when the archive
+   did not come back or does not hold every one of them (skillAdd then fetches file by file). */
+async function bundleBodies(id, plan) {
+  let files
+  try {
+    files = untarGz(await skillBundle(id))
+  } catch {
+    return null
+  }
+  const byPath = new Map(files.map((f) => [f.path, f.body]))
+  const out = []
+  for (const p of plan) {
+    const body = byPath.get(p)
+    if (!body) return null
+    out.push(body.toString('utf8'))
+  }
+  return out
+}
+
 async function skillAdd(listing, where, clientId, quiet, ctx = {}) {
   const listed = await api.skillFiles(listing.id)
   if (!listed.files?.length) throw new Refused(`${listing.name} has no files with us to write.`)
@@ -1640,13 +1811,23 @@ async function skillAdd(listing, where, clientId, quiet, ctx = {}) {
   /* EVERYTHING IS FETCHED BEFORE ANYTHING IS WRITTEN. The files were written as they arrived,
      so a 503 on the second left a folder with a SKILL.md and no references — one the client
      loads as complete — under a message that said nothing was written. */
-  const bodies = []
-  try {
-    for (const p of plan) bodies.push(await skillFile(listing.id, p))
-  } catch (err) {
-    /* true here, and said here: the layer that fetches cannot know what was written */
-    if (!(err instanceof Refused)) throw err
-    throw new Refused(`${err.message} Nothing was written.`, { ...extrasOf(err), ...(err.status ? { status: err.status } : {}), ...(err.retryAfterSeconds ? { retryAfterSeconds: err.retryAfterSeconds } : {}) })
+  /* THE FOLDER IN ONE REQUEST, FILE BY FILE ONLY WHEN THAT FAILS (K24). Every file was its own
+     request — 160 files, 160 key checks and row reads on the marketplace, and a folder that a
+     rate limit could stop half-way. The archive the marketplace serves beside /files is the same
+     folder; it is read here, and each planned file is taken from it. Anything short of every
+     planned file — an older marketplace without the route, a folder with no SKILL.md at its top
+     (the archive route refuses that one, the file route serves it), a body that is not a tar —
+     falls back to the old way, which also produces the refusal a person should read. */
+  let bodies = await bundleBodies(listing.id, plan)
+  if (!bodies) {
+    bodies = []
+    try {
+      for (const p of plan) bodies.push(await skillFile(listing.id, p))
+    } catch (err) {
+      /* true here, and said here: the layer that fetches cannot know what was written */
+      if (!(err instanceof Refused)) throw err
+      throw new Refused(`${err.message} Nothing was written.`, { ...extrasOf(err), ...(err.status ? { status: err.status } : {}), ...(err.retryAfterSeconds ? { retryAfterSeconds: err.retryAfterSeconds } : {}) })
+    }
   }
 
   /* and written into a folder beside the real one, swapped in whole at the end: a failure
@@ -1736,7 +1917,7 @@ async function skillAdd(listing, where, clientId, quiet, ctx = {}) {
 }
 
 const COMMANDS = {
-  login, whoami, list, clients, add, remove, stack, budget, skill,
+  login, logout, relink, whoami, list, clients, add, remove, stack, budget, skill,
   install: add, uninstall: remove, 'add-list': addList,
 }
 

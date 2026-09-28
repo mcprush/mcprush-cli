@@ -114,20 +114,22 @@ keeps no copy.
 | `mcprush login` | hold a key: asked for without echo, or piped in (`printf %s "$KEY" \| mcprush login`) — with no terminal the first line of stdin is the key, and a stdin that sends nothing for 5 seconds is given up on; it is checked before it is stored, and `--dry-run` checks without storing. `login <key>` works but leaves the key in shell history. A login without `--host` drops a host an earlier `--host` pinned |
 | `mcprush add <server> [<server> …]` | install and write the client entry; the key from the card or the page's `<publisher>/<slug>` |
 | `mcprush remove <server>` | take it off the account and out of the client, by either spelling; only an entry this tool wrote, unless `--force`. An install holding variables you set is taken off only with a write key — a read-only key is refused and the file is left as it was |
-| `mcprush skill add <skill>` | write a skill's folder to disk; a folder you changed is replaced only with `--force` |
+| `mcprush skill add <skill>` | write a skill's folder to disk, fetched in one request (the marketplace's `bundle.tar.gz`; file by file only when that fails); a folder you changed is replaced only with `--force` |
 | `mcprush skill remove <skill>` | delete what `skill add` wrote and keep what you added; no key needed |
 | `mcprush stack add <stack>` | install a curated set: gateway members through the gateway, direct ones as the command or address the client starts |
 | `mcprush add-list <list>` | install one of your saved lists |
 | `mcprush budget [--max --alert]` | the account's monthly ceiling: checked when a subscription is bought, refusing an order that would pass it. Calls are limited by each install's own allowance, not by this figure. Owner or billing manager only; `--max` and `--alert` also need a write key |
 | `mcprush list` | what this account has installed |
-| `mcprush whoami` | which account this key belongs to |
+| `mcprush whoami` | which account this key belongs to, its scope, when it expires and which seat minted it |
+| `mcprush relink` | after a new key (`login`), put it into every entry this tool wrote — Claude Code, Claude Desktop, Cursor, Windsurf, Zed — so they stop getting 401; the key is checked first, an entry you wrote is never touched, `--client` narrows it to one client and `--dry-run` only names them. VS Code asks for the key itself and has nothing to relink |
+| `mcprush logout` | forget the key `login` saved (and the host it pinned), and name the entries this tool wrote that still carry it: they keep working until the key is revoked in your dashboard |
 | `mcprush clients` | which clients can be written to on this machine |
 
 Flags:
 
 | | |
 |---|---|
-| `--client <id>` | which client to write (default: `claude-code`); case does not matter, `claude-desktop`, `code` and `vs-code` are accepted, and a name the marketplace does not know is refused before anything is installed |
+| `--client <id>` | which client to write (default: `claude-code`; for `relink`, every client this tool writes); case does not matter, `claude-desktop`, `code` and `vs-code` are accepted, and a name the marketplace does not know is refused before anything is installed |
 | `--global` | for skills: the home folder rather than this project |
 | `--host <url>` | a different marketplace (default: mcprush.com); https, or `http://localhost` for one of your own — the key travels with every call, and a redirect is never followed. A trailing slash or a missing scheme is fine |
 | `--json` | machine-readable output, on every path — a refusal is `{ ok: false, error, status, … }` with only the fields the marketplace sent |
@@ -211,7 +213,7 @@ No dependencies and no build step: the files in `bin/` and `lib/` are what
 ships.
 
 ```sh
-npm test                 # 125 tests, node:test, no runner to install
+npm test                 # 133 tests, node:test, no runner to install
 npm pack --dry-run       # what would go to the registry
 node bin/mcprush.js --help
 ```

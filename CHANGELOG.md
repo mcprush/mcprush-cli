@@ -4,12 +4,44 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions
 follow [semver](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-09-28
 
 An audit of 0.1.4 on 27 Sep 2026 — the client, its contract with the
 marketplace, and its security — each finding reproduced on a scratch HOME
-against a marketplace answering like the real one before it was fixed. Not
-published yet; the version in `package.json` stays 0.1.4 until it is.
+against a marketplace answering like the real one before it was fixed.
+A minor rather than a patch, because some of it refuses what 0.1.4
+did quietly: an entry this tool did not write is no longer replaced without
+`--force`, an unknown flag is refused, `stack add` exits 1 on a conflict, and
+`skill add --client claude-desktop` writes nothing.
+
+### Added
+- **`mcprush relink`.** A rotated, revoked or expired key left every entry
+  `add` had written with it answering 401, and the way out was to find each
+  client's file and edit each entry by hand. `relink` checks the key held now
+  with the marketplace, then writes it into every entry this tool wrote —
+  `Authorization` in `headers`, or `MCPRUSH_AUTH` in the Claude Desktop
+  bridge's `env` — in the clients it writes, or the one named by `--client`.
+  An entry you wrote is never read for a key, let alone changed; a file that
+  does not exist is not created; `--dry-run` names what would change. VS Code's
+  entry asks for the key itself (`${input:mcprush-key}`) and holds none.
+- **`mcprush logout`.** Forgets the key `login` saved, and the host it pinned,
+  and names the entries this tool wrote that still carry that key — forgetting
+  it here does not stop them; revoking it in the dashboard does.
+- `login` says how many entries of ours carry another key, and that `relink`
+  puts the new one in them (`staleEntries` in `--json`).
+- **`skill add` takes a skill's folder in one request**: the
+  `bundle.tar.gz` the marketplace serves beside `/files`, read here (ustar with
+  PAX path records; only regular files, nothing that could link out of the
+  folder), each planned file taken from it. 160 files were 160 requests, each a
+  key check on the other side, and a rate limit could stop the folder half-way.
+  Anything short of every planned file — an older marketplace, a folder without
+  a SKILL.md at its top, a body that is not a tar — falls back to file by file.
+
+### Fixed
+- `remove` of a frozen listing the account no longer holds takes the entry out
+  of the client: the marketplace answers such a lookup 409, and `remove` took
+  only a 404 for "use the name as it stands", so it stopped and left the entry
+  in the file.
 
 ### Fixed
 - **Claude Desktop never loaded what `add --client claude-desktop` wrote.**
@@ -112,7 +144,9 @@ published yet; the version in `package.json` stays 0.1.4 until it is.
 - README, help and this changelog agree with the code: the test count, the
   `stack add` exception to `--dry-run`, `--key`, `skill remove --force`.
 - 32 tests on the above in `test/audit.test.js`, each finding reproduced on
-  0.1.4 before it was fixed: 125 in total.
+  0.1.4 before it was fixed, and 8 in `test/relink.test.js` on `relink`,
+  `logout`, the one-request folder and `remove` of a frozen listing: 133 in
+  total.
 
 ## [0.1.4] — 2026-09-12
 

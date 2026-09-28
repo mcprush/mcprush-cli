@@ -34,10 +34,18 @@ Worth knowing before you read the code:
   from before the package changed maintainers — so a new release is not run
   with your key until this tool is released with it.
 - **It downloads text.** `skill add` fetches the files of a skill your account
-  holds and writes them to disk. Nothing is executed by this tool; a file that
-  starts with `#!` is made executable for the client to run. Every path is
-  checked to land inside the skill's own folder — including after symlinks
-  are resolved.
+  holds and writes them to disk — in one request, as the marketplace's
+  `bundle.tar.gz`, which this tool unpacks itself (no `tar` binary is run):
+  only regular files are read out of it, never a link or a device, the
+  unpacked size is capped, and only the files the marketplace listed are
+  written. Nothing is executed by this tool; a file that starts with `#!` is
+  made executable for the client to run. Every path is checked to land inside
+  the skill's own folder — including after symlinks are resolved.
+- **It rewrites its own entries when asked.** `relink` puts the key it holds
+  into the entries it wrote, after checking that key with the marketplace; an
+  entry it did not write is never read for a key. `logout` forgets the saved
+  key and says which entries still carry it — only revoking the key in the
+  dashboard stops those.
 - **It prints what the marketplace sends.** Every string from it or from a
   publisher is printed with control sequences removed — OSC (the clipboard
   among them), CSI, C0 and C1.
