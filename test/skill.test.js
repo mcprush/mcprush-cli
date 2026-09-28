@@ -173,17 +173,19 @@ test('a file the marketplace cannot serve leaves nothing on disk, and the refusa
 
 test('several skills, the bare id, and a client the marketplace names', async () => {
   const home = scratch('mcprush-skill-')
+  /* VS Code, not Claude Desktop, since 0.2.1: a client that reads no folder by design is answered
+     before the table (NO_SKILL_FOLDER), so the table's own folder is shown on one that has one */
   const m = await marketplace((req) => (req.url === '/api/cli/clients'
-    ? { gateway: 'x', rows: [...CLIENT_ROWS.filter((r) => r.id !== 'claude'), { id: 'claude', name: 'Claude Desktop', skillsDir: 'desk/skills/' }] }
+    ? { gateway: 'x', rows: [...CLIENT_ROWS.filter((r) => r.id !== 'vscode'), { id: 'vscode', name: 'VS Code', skillsDir: 'desk/skills/' }] }
     : catalogue(V1)(req)))
   try {
     /* the alias reaches the marketplace's own row, whose folder is used */
-    const r = await run(m.host, home, ['skill', 'add', 'sk_demo', '--client', 'claude-desktop', '--json'], { noKey: true })
+    const r = await run(m.host, home, ['skill', 'add', 'sk_demo', '--client', 'vs-code', '--json'], { noKey: true })
     assert.equal(r.code, 0, r.err)
     /* the project is the child's cwd, which macOS reports through /private */
     assert.equal(r.json().dir, join(realpathSync(home), 'desk', 'skills', 'demo'))
     /* the bare id resolves through the marketplace for a remove too */
-    const rm = await run(m.host, home, ['skill', 'remove', 'sk_demo', '--client', 'claude-desktop', '--json'], { noKey: true })
+    const rm = await run(m.host, home, ['skill', 'remove', 'sk_demo', '--client', 'vs-code', '--json'], { noKey: true })
     assert.equal(rm.code, 0, rm.err)
     assert.ok(!existsSync(join(home, 'desk', 'skills', 'demo')))
     /* two at once: one answer, one line each */

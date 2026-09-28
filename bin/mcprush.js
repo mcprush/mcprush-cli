@@ -16,9 +16,10 @@ import {
   atPath, skillDirFor, ensureInputs, checkInputs, dropUnusedInput, insideDir, realInside, scrubLiteralKey, checkedUrl,
   safeEntryKey, ownEntry, checkWritable, directStart, directEntryFor, directEntryOurs, legacyEntriesFor, entryLine, sameLaunch,
   ENV_PLACEHOLDER, BRIDGE_SPEC,
-  printable, workspaceNote, NO_SKILL_FOLDER, heldKey, putKey,
+  printable, workspaceNote, legacyNote, NO_SKILL_FOLDER, LIVE_SKILLS, heldKey, putKey, targetsOf, FILED_AS,
 } from '../lib/config.js'
 import { api, skillFile, skillBundle, Refused, parseRef } from '../lib/api.js'
+import { setupFor } from '../lib/byhand.js'
 import { untarGz } from '../lib/tar.js'
 import { parse, boolFlag, unknownFlags } from '../lib/args.js'
 
@@ -131,12 +132,44 @@ async function resolveClient() {
   const rows = await clientTable()
   const known = rows ? rows.map((r) => r.id) : KNOWN_CLIENTS
   if (!known.includes(id)) {
+    /* the ones this tool writes are named too: `devin` is one, before the marketplace lists it */
+    const named = [...known, ...Object.keys(CLIENTS).filter((c) => !known.includes(c))]
     throw new Refused(
       `\`${raw}\` is not a client this marketplace knows, so nothing was installed and nothing was written. `
-      + `Known: ${known.join(', ')}.`, { how: host() + '/cli' })
+      + `Known: ${named.join(', ')}.`, { how: host() + '/cli' })
   }
   return id
 }
+
+/* The id the marketplace files an install under: the client's own, or the one its table still
+   knows it by (FILED_AS — Devin Desktop is `windsurf` there until the table has a `devin` row).
+   Asked once per command, from the table fetched for the client check. */
+async function filedAs(clientId) {
+  if (!Object.hasOwn(FILED_AS, clientId)) return clientId
+  const rows = await clientTable()
+  return rows && rows.some((r) => r.id === clientId) ? clientId : FILED_AS[clientId]
+}
+
+/* THE OTHER FILES OF THE SAME CLIENT (targetsOf) — Claude Desktop's Store build reads its own —
+   read in the pre-flight as the first one is, so that a link, a file that is not JSON or an
+   entry of somebody else's there is refused before anything is installed. Under --dry-run what
+   cannot be read is carried, not thrown, as for the first file. */
+function copiesOf(client, dry) {
+  return targetsOf(client).slice(1).map((t) => {
+    try {
+      const data = readClientFile(t)
+      const bucket = atPath(data, t.at)
+      checkInputs(t, data)
+      if (!dry) checkWritable(t)
+      return { t, bucket }
+    } catch (err) {
+      if (!dry) throw err
+      return { t, bucket: null, unreadable: err.message }
+    }
+  })
+}
+/* the file, among a client's, that holds an entry under `k` this tool did not write */
+const theirsIn = (files, k) => files.find(({ bucket }) => !!bucket && Object.hasOwn(bucket, k) && !ownEntry(bucket[k])) || null
 
 /* AN ENTRY THIS TOOL DID NOT WRITE IS NOT REPLACED UNASKED. `add`, `add-list` and `stack add`
    wrote over any entry under the name, and said only "entry replaced": a hand-written `github`
@@ -164,27 +197,39 @@ function guardOwn(client, bucket, entryKey, alsoOurs = () => false) {
    the client saved in between is not overwritten. A refusal at this point is worded for what
    has already happened: the installs are on the account by now, and "nothing was written" —
    true of the file — was the whole of what the person was told. */
+/* Every file of the client is written (targetsOf), the first as before: `put` is handed each
+   one's entries and whether it is the first, so that what is reported — replaced, forced — is
+   read off that one. `also` names the copies written beside it. */
 function writeEntries(client, put, onAccount) {
-  try {
-    let swapped = 0
-    const { file, notes } = updateClientFile(client, (fresh) => {
-      put(atPath(fresh, client.at))
-      swapped = scrubLiteralKey(client, fresh, key())
-      ensureInputs(client, fresh)
-    })
-    return { file, notes, swapped }
-  } catch (err) {
-    const ids = onAccount.map((a) => a && a.id).filter((x) => typeof x === 'string' && x)
-    const sentence = err && err.handled
-      ? err.message
-      : `${client.file} could not be written (${err?.code || err?.message}). Nothing was written to the config.`
-    const undo = ids.length
-      ? ` The install${ids.length === 1 ? ' is' : 's are'} already on your account: `
-        + ids.map((i) => `\`mcprush remove ${i}\``).join(', ') + ' take' + (ids.length === 1 ? 's it' : ' them')
-        + ' off, or your dashboard does.'
-      : ''
-    throw new Refused(sentence + undo, { installed: ids, ...extrasOf(err) })
+  const wrote = []
+  const notes = []
+  let swapped = 0
+  for (const t of targetsOf(client)) {
+    try {
+      const done = updateClientFile(t, (fresh) => {
+        put(atPath(fresh, t.at), t, !wrote.length)
+        swapped += scrubLiteralKey(t, fresh, key())
+        ensureInputs(t, fresh)
+      })
+      wrote.push(done.file)
+      notes.push(...(done.notes || []))
+    } catch (err) {
+      const ids = onAccount.map((a) => a && a.id).filter((x) => typeof x === 'string' && x)
+      const sentence = err && err.handled
+        ? err.message
+        : `${t.file} could not be written (${err?.code || err?.message}). Nothing was written to the config.`
+      /* a copy that fails after the first file was written: the install stands, and has an entry */
+      const undo = wrote.length
+        ? ` ${wrote.join(' and ')} ${wrote.length === 1 ? 'was' : 'were'} written; copy the entry into ${t.file} by hand.`
+        : ids.length
+          ? ` The install${ids.length === 1 ? ' is' : 's are'} already on your account: `
+            + ids.map((i) => `\`mcprush remove ${i}\``).join(', ') + ' take' + (ids.length === 1 ? 's it' : ' them')
+            + ' off, or your dashboard does.'
+          : ''
+      throw new Refused(sentence + undo, { installed: ids, ...(wrote.length ? { wrote } : {}), ...extrasOf(err) })
+    }
   }
+  return { file: wrote[0], also: wrote.slice(1), notes: notes.length ? notes : null, swapped }
 }
 
 /* ---- commands ---- */
@@ -385,28 +430,32 @@ function keyedEntries(ids) {
   const found = []
   const unreadable = []
   for (const id of ids) {
-    const client = CLIENTS[id]
-    if (!client || !existsSync(client.file)) continue
-    let bucket
-    try {
-      bucket = atPath(readClientFile(client), client.at)
-    } catch (err) {
-      unreadable.push({ client: id, file: client.file, error: err?.message || String(err) })
-      continue
-    }
-    for (const [name, entry] of Object.entries(bucket)) {
-      if (!ownEntry(entry)) continue
-      const held = heldKey(entry)
-      if (held) found.push({ client: id, name: client.name, file: client.file, entry: name, token: held.token })
+    /* every file of it: Claude Desktop's Store copy carries the key as well */
+    for (const client of targetsOf(CLIENTS[id])) {
+      if (!existsSync(client.file)) continue
+      let bucket
+      try {
+        bucket = atPath(readClientFile(client), client.at)
+      } catch (err) {
+        unreadable.push({ client: id, file: client.file, error: err?.message || String(err) })
+        continue
+      }
+      for (const [name, entry] of Object.entries(bucket)) {
+        if (!ownEntry(entry)) continue
+        const held = heldKey(entry)
+        if (held) found.push({ client: id, name: client.name, file: client.file, entry: name, token: held.token })
+      }
     }
   }
   return { found, unreadable }
 }
-/* one line per client: "Claude Code (~/.claude.json): github, notion" */
+/* the client object for one of its files, as keyedEntries found it */
+const fileOf = (id, file) => targetsOf(CLIENTS[id]).find((t) => t.file === file) || CLIENTS[id]
+/* one line per file: "Claude Code (~/.claude.json): github, notion" */
 const perClient = (rows) => {
   const by = new Map()
   for (const r of rows) {
-    const k = r.client
+    const k = r.client + '\u0000' + r.file
     if (!by.has(k)) by.set(k, { client: r.client, name: r.name, file: r.file, entries: [] })
     by.get(k).entries.push(r.entry)
   }
@@ -479,7 +528,7 @@ async function relink() {
   const done = []
   const failed = []
   for (const c of stale) {
-    const client = CLIENTS[c.client]
+    const client = fileOf(c.client, c.file)
     const changed = []
     try {
       updateClientFile(client, (fresh) => {
@@ -528,13 +577,19 @@ async function clients() {
   const { rows } = await api.clients()
   emit({ rows }, () => {
     /* a row without a string id is not a client: `r.id.padEnd` threw on it, as clientTable() knew */
-    for (const r of rows.filter((x) => x && typeof x.id === 'string')) {
+    const listed = rows.filter((x) => x && typeof x.id === 'string')
+    for (const r of listed) {
       const local = Object.hasOwn(CLIENTS, r.id) ? CLIENTS[r.id] : null
       say(`${local ? green('✓') : dim('·')} ${bold(safe(r.id).padEnd(12))} ${safe(r.name)}`)
-      if (local) say(dim(`    ${local.file}`))
+      for (const t of targetsOf(local)) say(dim(`    ${t.file}`))
     }
-    say(dim('\n  ✓ = this tool can write its config here. The rest are set up by hand;'))
-    say(dim('    `mcprush add <server> --json` prints the address and header to paste.'))
+    /* a client this tool writes before the marketplace's table has a row for it: `devin` */
+    for (const id of Object.keys(CLIENTS).filter((c) => !listed.some((r) => r.id === c))) {
+      say(`${green('✓')} ${bold(id.padEnd(12))} ${CLIENTS[id].name}`)
+      for (const t of targetsOf(CLIENTS[id])) say(dim(`    ${t.file}`))
+    }
+    say(dim('\n  ✓ = this tool can write its config here. The rest are set up by hand:'))
+    say(dim('    `mcprush add <server> --client <id>` prints that client\'s own command or snippet.'))
   })
 }
 
@@ -576,6 +631,9 @@ async function add() {
     }
   }
   const bucket = client ? atPath(data, client.at) : null
+  const copies = client ? copiesOf(client, DRY) : []
+  const files = [{ t: client, bucket }, ...copies]
+  const filed = await filedAs(clientId)
 
   const done = []
   const failed = []
@@ -639,14 +697,14 @@ async function add() {
       }
       if (resolved.has(entryKey)) continue
       resolved.add(entryKey)
-      /* the pre-flight's copy: refused here, before the install is recorded (foreign()) */
-      if (bucket && !FORCE && Object.hasOwn(bucket, entryKey) && !ownEntry(bucket[entryKey])) {
-        throw new Refused(foreign(client, entryKey, 'Nothing was installed.'))
-      }
+      /* the pre-flight's copy: refused here, before the install is recorded (foreign()) — in
+         any of the client's files */
+      const held = FORCE ? null : theirsIn(files, entryKey)
+      if (held) throw new Refused(foreign(held.t, entryKey, 'Nothing was installed.'))
 
       /* the install first: the gateway refuses calls from an account without one */
       let installed = { unchanged: true, url: listing.url }
-      if (!DRY) installed = await api.install(listing.id, clientId)
+      if (!DRY) installed = await api.install(listing.id, filed)
       /* The install answer's address is checked like the listing's was, and the checked listing
          address stands in for one that fails: this is after the install is recorded, so a
          refusal here would be one over an install that stands — and the by-hand branch below
@@ -686,16 +744,36 @@ async function add() {
       client: clientId,
       wrote: null,
       /* The header is in the answer: this is the fallback the README points to for clients this
-         tool cannot write, and a truncated header cannot be pasted. */
-      installed: done.map((d) => ({ ...d, header: { Authorization: 'Bearer ' + key() } })),
+         tool cannot write, and a truncated header cannot be pasted. `setup` is the client's own
+         form of the same entry (lib/byhand.js), for the clients the table knows. */
+      installed: done.map((d) => {
+        const form = setupFor(clientId, d.id, d.url, key())
+        return { ...d, header: { Authorization: 'Bearer ' + key() }, ...(form ? { setup: { code: form.code, how: form.how } } : {}) }
+      }),
       failed,
     }, () => {
       for (const d of done) {
         say(green('✓') + ` ${safe(d.name)} is ${d.unchanged ? 'already ' : ''}installed on this account.`)
-        say(dim(`  ${clientId} is set up by hand. Add an HTTP MCP server with:`))
-        say(`    url    ${d.url}`)
-        /* The whole key: it is the reader's own, and pasting it is the point of this branch. */
-        say(`    header Authorization: Bearer ${key()}`)
+        /* THE CLIENT'S OWN COMMAND, NOT A URL AND A HEADER (lib/byhand.js). The key is printed
+           whole where the form needs it and the shell does not already hold it: it is the
+           reader's own, and pasting it is the point of this branch. */
+        const form = setupFor(clientId, d.id, d.url, key())
+        if (form) {
+          say(dim(`  ${clientId} is set up by hand, with ${form.what}:`))
+          for (const line of form.code.split('\n')) say(`    ${line}`)
+          say(dim(`  ${form.how}`))
+          if (form.key === 'env') {
+            say(dim(process.env.MCPRUSH_KEY
+              ? '  MCPRUSH_KEY is set in this shell.'
+              : `  MCPRUSH_KEY is not set in this shell; the key this tool holds is ${key()}`))
+          } else if (form.key === 'paste') {
+            say(`    your key: ${key()}`)
+          }
+        } else {
+          say(dim(`  ${clientId} is set up by hand. Add an HTTP MCP server with:`))
+          say(`    url    ${d.url}`)
+          say(`    header Authorization: Bearer ${key()}`)
+        }
         if (d.variables && Array.isArray(d.variables.needed) && d.variables.needed.length) {
           say(`  ${bold('It will not answer until you set:')}`)
           for (const v of d.variables.needed) say(`    ${safe(v && v.key)}${v && v.about ? dim('  — ' + safe(v.about)) : ''}`)
@@ -709,10 +787,15 @@ async function add() {
   }
 
   if (DRY) {
-    emit({ ok: !failed.length, dryRun: true, file: client.file, unreadable, installed: done, failed }, () => {
+    const also = copies.map((c) => c.t.file)
+    emit({ ok: !failed.length, dryRun: true, file: client.file, ...(also.length ? { also } : {}), unreadable, installed: done, failed }, () => {
       say(dim('nothing was written — this is what would be:'))
       say(`  ${client.file}`)
       if (unreadable) say(red('  and it would not be, as things stand: ') + String(unreadable).split('\n')[0])
+      for (const c of copies) {
+        say(`  ${c.t.file}`)
+        if (c.unreadable) say(red('  and it would not be, as things stand: ') + String(c.unreadable).split('\n')[0])
+      }
       for (const d of done) say(`  ${d.id} → ${safe(d.url)}${d.forced ? '  (--force: replaces an entry this tool did not write)' : ''}`)
       for (const f of failed) complain(f.name, f)
     })
@@ -725,17 +808,20 @@ async function add() {
      early copy only decides whether there is anything to write: the write reads afresh. */
   const swappedBefore = scrubLiteralKey(client, data, key())
   let file = null
+  let also = []
   let swapped = 0
   let notes = null
   if (done.length || swappedBefore) {
-    ({ file, swapped, notes } = writeEntries(client, (bucket) => {
+    ({ file, also, swapped, notes } = writeEntries(client, (bucket, t, first) => {
       /* what was there before this write, not after the first entry of it went in */
       const before = { ...bucket }
       for (const d of done) {
-        guardOwn(client, bucket, d.id)
-        d.replaced = Object.hasOwn(before, d.id)
-        d.forced = d.replaced && !ownEntry(before[d.id])
-        bucket[d.id] = entryFor(client.shape, d.url, key())
+        guardOwn(t, bucket, d.id)
+        if (first) {
+          d.replaced = Object.hasOwn(before, d.id)
+          d.forced = d.replaced && !ownEntry(before[d.id])
+        }
+        bucket[d.id] = entryFor(t.shape, d.url, key())
       }
     /* the undo advice names what THIS run put on the account: a row the account already
        held (unchanged) is not something a failed write should tell the person to remove */
@@ -755,6 +841,7 @@ async function add() {
       : {}),
     client: clientId,
     wrote: file,
+    ...(also.length ? { alsoWrote: also } : {}),
     installed: done,
     failed,
     ...(ignoredFlags.length ? { ignored: ignoredFlags } : {}),
@@ -781,6 +868,7 @@ async function add() {
     for (const f of failed) complain(f.name, f)
     if (file) {
       say(dim(`  ${file}`))
+      for (const f of also) say(dim(`  ${f}  (the Microsoft Store build reads this one)`))
       say(dim(client.shape === 'desktop'
         ? `  Claude Desktop starts it through \`npx ${BRIDGE_SPEC}\`, so Node.js has to be installed; quit and reopen it to pick it up`
         : '  restart the client to pick it up'))
@@ -788,6 +876,8 @@ async function add() {
     for (const n of notes || []) say(dim(`  ${n}`))
     const ws = file ? workspaceNote(client) : null
     if (ws) say(dim(`  note: ${ws}`))
+    const legacy = file ? legacyNote(client) : null
+    if (legacy) say(dim(`  note: ${legacy}`))
     if (planAsked) {
       say(dim(`  --plan ${planAsked} was ignored: a plan is chosen at checkout, in the browser`))
     }
@@ -840,9 +930,11 @@ async function stack() {
     ensureInputs(client, data)
     checkWritable(client)
   }
-  const theirs = (k) => !!bucket && !FORCE && Object.hasOwn(bucket, k) && !ownEntry(bucket[k])
+  const files = [{ t: client, bucket }, ...(client ? copiesOf(client, false) : [])]
+  const theirs = (k) => !FORCE && !!theirsIn(files, k)
+  const filed = await filedAs(clientId)
 
-  const res = await api.stack(name, clientId)
+  const res = await api.stack(name, filed)
   /* The shape is checked: `added: null` would fall out of the loop as a bare stack trace. */
   if (!res || !Array.isArray(res.added) || !Array.isArray(res.skipped)) {
     throw new Refused(`${host()} answered without a list of what a stack installs. Nothing was written.`)
@@ -868,7 +960,7 @@ async function stack() {
       continue
     }
     try {
-      const again = await api.install(String(sk.id), clientId)
+      const again = await api.install(String(sk.id), filed)
       held.push({ id: String(sk.id), url: again && again.url })
     } catch (err) {
       /* AN ANSWER THAT WILL NOT CHANGE IS NAMED, NOT FATAL. Only 409 was: a 403 (an address not
@@ -980,17 +1072,22 @@ async function stack() {
   const byHand = direct.filter((d) => !d.written && !d.kept && !d.conflict)
 
   let wrote = null
+  let also = []
   let notes = null
   if (client && (gateway.length || toWrite.length)) {
-    ({ file: wrote, notes } = writeEntries(client, (bucket) => {
+    ({ file: wrote, also, notes } = writeEntries(client, (bucket, t, first) => {
       const before = { ...bucket }
       for (const a of gateway) {
-        guardOwn(client, bucket, safeEntryKey(a.id))
-        bucket[safeEntryKey(a.id)] = entryFor(client.shape, a.url, key())
+        guardOwn(t, bucket, safeEntryKey(a.id))
+        bucket[safeEntryKey(a.id)] = entryFor(t.shape, a.url, key())
       }
       for (const d of toWrite) {
-        guardOwn(client, bucket, d.key, (there) => directEntryOurs(client.shape, d.started, there))
-        d.replaced = Object.hasOwn(before, d.key)
+        /* the decisions above were taken on the first file; in a copy, an entry of the
+           person's under the name — their own filled-in one, say — is left as it is */
+        const there = before[d.key]
+        if (!first && !FORCE && Object.hasOwn(before, d.key) && !ownEntry(there) && !directEntryOurs(t.shape, d.started, there)) continue
+        guardOwn(t, bucket, d.key, (x) => directEntryOurs(t.shape, d.started, x))
+        if (first) d.replaced = Object.hasOwn(before, d.key)
         bucket[d.key] = d.entry
       }
     /* only this run's new installs: a held member was on the account before the command */
@@ -1005,7 +1102,8 @@ async function stack() {
   const skippedOnly = res.skipped.filter((sk) => !(sk && (directIds.has(String(sk.id)) || heldIds.has(String(sk.id)) || conflictIds.has(String(sk.id)))))
 
   emit({
-    ok: !conflicts.length, stack: name, added: res.added, held, skipped: res.skipped, wrote, client: clientId,
+    ok: !conflicts.length, stack: name, added: res.added, held, skipped: res.skipped, wrote,
+    ...(also.length ? { alsoWrote: also } : {}), client: clientId,
     /* `key` is the entry name inside the file, which is the id already checked; the rest —
        the entry as written, or the reason it was not — is what a script wants to read */
     direct: direct.map(({ key: _k, started: _s, ...d }) => d),
@@ -1064,12 +1162,15 @@ async function stack() {
     }
     for (const sk of skippedOnly) say(dim(`  · ${safe(sk.id)} — ${safe(sk.why)}`))
     if (wrote) say(dim(`  ${wrote}`))
+    for (const f of also) say(dim(`  ${f}  (the Microsoft Store build reads this one)`))
     for (const n of notes || []) say(dim(`  ${n}`))
     if (wrote && client.shape === 'desktop') {
       say(dim(`  Claude Desktop starts a remote one through \`npx ${BRIDGE_SPEC}\`, so Node.js has to be installed; quit and reopen it`))
     }
     const ws = wrote ? workspaceNote(client) : null
     if (ws) say(dim(`  note: ${ws}`))
+    const legacy = wrote ? legacyNote(client) : null
+    if (legacy) say(dim(`  note: ${legacy}`))
     if (skippedOnly.some((x) => String(x.why || '').startsWith('paid'))) say(dim('  ' + safe(res.page || '')))
     if (byHand.length) {
       say('')
@@ -1115,8 +1216,10 @@ async function addList() {
       bucket = null
     }
   }
+  const files = [{ t: client, bucket }, ...(client ? copiesOf(client, DRY) : [])]
+  const filed = await filedAs(clientId)
 
-  const found = await api.listAdd(name, clientId)
+  const found = await api.listAdd(name, filed)
   if (!found || !Array.isArray(found.items)) {
     throw new Refused(`${host()} answered without the items of that list. Nothing was written.`)
   }
@@ -1167,12 +1270,13 @@ async function addList() {
         failed.push({ id: listingId, why: `is named in a way this tool will not write into a config` })
         continue
       }
-      if (bucket && !FORCE && Object.hasOwn(bucket, listingId) && !ownEntry(bucket[listingId])) {
-        failed.push({ id: listingId, why: foreign(client, listingId, 'Nothing was installed for it.') })
+      const theirs = FORCE ? null : theirsIn(files, listingId)
+      if (theirs) {
+        failed.push({ id: listingId, why: foreign(theirs.t, listingId, 'Nothing was installed for it.') })
         continue
       }
       let installed = null
-      if (!DRY) installed = await api.install(listingId, clientId)
+      if (!DRY) installed = await api.install(listingId, filed)
       added.push({
         id: listingId,
         url: (installed && checkedUrl(installed.url)) || listedAt,
@@ -1186,13 +1290,14 @@ async function addList() {
     }
   }
   let wrote = null
+  let also = []
   let notes = null
   if (client && added.length && !DRY) {
-    ({ file: wrote, notes } = writeEntries(client, (bucket) => {
+    ({ file: wrote, also, notes } = writeEntries(client, (bucket, t, first) => {
       for (const a of added) {
-        guardOwn(client, bucket, a.id)
-        a.replaced = Object.hasOwn(bucket, a.id)
-        bucket[a.id] = entryFor(client.shape, a.url, key())
+        guardOwn(t, bucket, a.id)
+        if (first) a.replaced = Object.hasOwn(bucket, a.id)
+        bucket[a.id] = entryFor(t.shape, a.url, key())
       }
     /* only this run's new installs, as add() and stack add do */
     }, added.filter((a) => !a.unchanged)))
@@ -1200,7 +1305,7 @@ async function addList() {
   if (DRY) {
     emit({ ok: !failed.length, dryRun: true, list: found.list, would: added, skipped, failed, file: client ? client.file : null }, () => {
       say(dim('nothing was written — this is what would be:'))
-      if (client) say(`  ${client.file}`)
+      for (const f of files) if (f.t) say(`  ${f.t.file}`)
       for (const a of added) say(`  ${safe(a.id)} → ${safe(a.url)}`)
       for (const sk of skipped) say(dim(`  · ${safe(sk.id)} — ${safe(sk.why)}`))
       for (const f of failed) complain(f.id, f)
@@ -1208,7 +1313,7 @@ async function addList() {
     if (failed.length) process.exitCode = 1
     return
   }
-  emit({ ok: !failed.length, list: found.list, added, skipped, failed, wrote, client: clientId }, () => {
+  emit({ ok: !failed.length, list: found.list, added, skipped, failed, wrote, ...(also.length ? { alsoWrote: also } : {}), client: clientId }, () => {
     say(green('✓') + ` ${bold(safe(found.name) || safe(name))} — ${added.length} installed`)
     if (!client && added.length) {
       say(dim(`  ${clientId} is set up by hand — nothing was written to a config`))
@@ -1225,9 +1330,12 @@ async function addList() {
     for (const sk of skipped) say(dim(`  · ${safe(sk.id)} — ${safe(sk.why)}`))
     for (const f of failed) complain(f.id, f)
     if (wrote) say(dim(`  ${wrote}`))
+    for (const f of also) say(dim(`  ${f}  (the Microsoft Store build reads this one)`))
     for (const n of notes || []) say(dim(`  ${n}`))
     const ws = wrote ? workspaceNote(client) : null
     if (ws) say(dim(`  note: ${ws}`))
+    const legacy = wrote ? legacyNote(client) : null
+    if (legacy) say(dim(`  note: ${legacy}`))
   })
   if (failed.length) process.exitCode = 1
 }
@@ -1239,7 +1347,7 @@ async function budget() {
   if (args._[1]) {
     throw new Refused(
       `\`${args._[1]}\` looks like a listing, and this ceiling is not per listing: it is one cap for the whole `
-      + 'account. Drop the name — `mcprush budget --max \'$900/mo\'` — or set a per-install limit in your '
+      + 'account. Drop the name — `mcprush budget --max 900` — or set a per-install limit in your '
       + 'dashboard.',
       { how: host() + '/library' })
   }
@@ -1254,8 +1362,14 @@ async function budget() {
     return cents >= 100 && cents <= 100_000_00 ? cents : null
   }
 
-  const wantMax = args.flags.max
-  const wantAlert = args.flags.alert
+  /* A PLAIN NUMBER IS AN AMOUNT IN EVERY SHELL. `--max 900 --alert 80` has always been read, and
+     is what the docs print now: `'$900/mo'` is a POSIX shell's spelling, and Windows cmd.exe
+     keeps single quotes as characters, so `--max '$900/mo'` arrived as `'$900/mo'` and was
+     refused as no amount at all. One pair of quotes around the whole value is dropped here, the
+     way a shell that knows them would have dropped it. */
+  const unquote = (v) => (v === undefined ? v : String(v).trim().replace(/^'([^']*)'$|^"([^"]*)"$/, '$1$2'))
+  const wantMax = unquote(args.flags.max)
+  const wantAlert = unquote(args.flags.alert)
   if (wantMax === undefined && wantAlert === undefined) {
     requireKey()
     const now = await api.budget()
@@ -1264,17 +1378,18 @@ async function budget() {
   }
   const maxCents = wantMax === undefined ? undefined : parseMoney(wantMax)
   if (wantMax !== undefined && maxCents === null) {
-    /* Single quotes in the hint: in double quotes the shell eats `$9`. The rejected value is
-       not echoed back, because what reaches us has already been mangled by the shell. */
+    /* The plain number first, since it works in every shell; the sign only in single quotes,
+       because in double quotes a POSIX shell eats `$9`. The rejected value is not echoed back,
+       because what reaches us has already been mangled by the shell. */
     throw new Refused(
-      'That is not an amount this tool can set: a cap is between $1 and $100,000 a month. Write it in single '
-      + "quotes so the shell leaves it alone: --max '$900/mo' — or without the sign at all: --max 900.")
+      'That is not an amount this tool can set: a cap is between $1 and $100,000 a month. Write it as a plain '
+      + "number, which every shell leaves alone — --max 900 — or with the sign in single quotes: --max '$900/mo'.")
   }
   /* Rounded here as the server rounds it, so a dry run shows the number that will be stored. */
   const alertPct = wantAlert === undefined ? undefined : Math.round(Number(String(wantAlert).replace('%', '')))
   /* A percentage runs from 1 to 100; any finite number was accepted, negatives included. */
   if (wantAlert !== undefined && (!Number.isFinite(alertPct) || alertPct < 1 || alertPct > 100)) {
-    throw new Refused('--alert takes a percentage between 1 and 100, as in 80%.')
+    throw new Refused('--alert takes a percentage between 1 and 100, as in --alert 80.')
   }
 
   /* A dry run answers in the format asked for: prose around emit() broke --json --dry-run. */
@@ -1325,6 +1440,7 @@ async function remove() {
     checkInputs(client, data)
     if (!DRY) checkWritable(client)
   }
+  const copies = client ? copiesOf(client, DRY) : []
 
   /* Both forms resolve, as in `add`. A listing gone from the storefront (404) is still taken
      out under its raw key, which is what an entry for it was written under — and so is a frozen
@@ -1341,20 +1457,25 @@ async function remove() {
      prototype, the file was rewritten for nothing, and the tick said an entry came out. */
   const entryKey = safeEntryKey(id)
   const bucket = client ? atPath(data, client.at) : null
-  const entry = bucket && entryKey && Object.hasOwn(bucket, entryKey) ? bucket[entryKey] : null
-  const ours = ownEntry(entry)
-  if (entry && !ours && !FORCE) {
+  /* every file of the client that holds the entry — the first, and Claude Desktop's Store copy */
+  const holders = [{ t: client, bucket }, ...copies]
+    .filter((f) => f.t && f.bucket && entryKey && Object.hasOwn(f.bucket, entryKey))
+    .map((f) => ({ t: f.t, ours: ownEntry(f.bucket[entryKey]) }))
+  const theirs = holders.find((h) => !h.ours) || null
+  const ours = holders.length > 0 && !theirs
+  if (theirs && !FORCE) {
     throw new Refused(
-      `${entryKey} in ${client.name} (${client.file}) is not a gateway entry this tool wrote: it is one you added `
+      `${entryKey} in ${theirs.t.name} (${theirs.t.file}) is not a gateway entry this tool wrote: it is one you added `
       + 'by hand, or a direct member `stack add` wrote — the same entry the listing page prints, with nothing of '
       + 'ours in it. Nothing was changed. Take it out by hand, or pass --force to have this tool delete it.')
   }
 
   if (DRY) {
-    emit({ dryRun: true, id, file: entry ? client.file : null, ours, account: false }, () => {
+    const at = holders.map((h) => h.t.file)
+    emit({ dryRun: true, id, file: at[0] ?? null, ...(at.length > 1 ? { also: at.slice(1) } : {}), ours, account: false }, () => {
       say(dim('nothing was changed — this is what would happen:'))
-      if (entry) say(`  ${entryKey} would come out of ${client.name}: ${client.file}${ours ? '' : ' (--force: not an entry of ours)'}`)
-      else say(`  ${safe(id)} is not in ${client ? client.name : 'any client this tool writes'}`)
+      for (const h of holders) say(`  ${entryKey} would come out of ${client.name}: ${h.t.file}${h.ours ? '' : ' (--force: not an entry of ours)'}`)
+      if (!holders.length) say(`  ${safe(id)} is not in ${client ? client.name : 'any client this tool writes'}`)
       say(dim('  and the account would be asked to take the install off'))
     })
     return
@@ -1375,50 +1496,59 @@ async function remove() {
         { status: err.status, ...extrasOf(err) })
     }
     offAccount = err.message
-    if (!entry) {
+    if (!holders.length) {
       throw new Refused(
         `${err.message} And ${id} is not in ${client ? client.name : 'a client this tool writes'}, so there `
         + 'was nothing to take out. Nothing was changed.', { status: 404 })
     }
   }
 
-  let removedFrom = null
-  let notes = null
-  if (entry) {
+  const removedFrom = []
+  const notes = []
+  for (const h of holders) {
+    const t = h.t
     try {
-      ({ file: removedFrom, notes } = updateClientFile(client, (fresh) => {
-        const b = atPath(fresh, client.at)
+      const done = updateClientFile(t, (fresh) => {
+        const b = atPath(fresh, t.at)
         /* ПРОВЕРКА НА ТЕХ ЖЕ БАЙТАХ, ЧТО И УДАЛЕНИЕ. Владение решалось по копии,
            прочитанной до сети, а удаляется из свежей: между ними клиент (или
            человек) мог переписать запись своей, и та уходила без спроса
            (встречная проверка 12 сен 2026). */
         if (!FORCE && Object.hasOwn(b, entryKey) && !ownEntry(b[entryKey])) {
           throw new Refused(
-            `${entryKey} in ${client.name} (${client.file}) changed while this ran and is no longer an entry `
+            `${entryKey} in ${t.name} (${t.file}) changed while this ran and is no longer an entry `
             + 'this tool wrote. Nothing was taken out of the config — look at it, then pass --force if it should go.')
         }
         if (Object.hasOwn(b, entryKey)) delete b[entryKey]
         /* `remove` rewrites the same file `add` does, so the key swap belongs here too; the
            VS Code inputs row goes once nothing names it, and is never added by a removal */
-        scrubLiteralKey(client, fresh, key())
-        dropUnusedInput(client, fresh)
-      }))
+        scrubLiteralKey(t, fresh, key())
+        dropUnusedInput(t, fresh)
+      })
+      removedFrom.push({ file: done.file, ours: h.ours })
+      notes.push(...(done.notes || []))
     } catch (err) {
-      const sentence = err && err.handled ? err.message : `${client.file} could not be written (${err?.code || err?.message}).`
-      throw new Refused(sentence + (account
-        ? ` The install is already off the account, so the entry left in ${client.file} points at nothing — take it out by hand.`
-        : ''), extrasOf(err))
+      const sentence = err && err.handled ? err.message : `${t.file} could not be written (${err?.code || err?.message}).`
+      throw new Refused(sentence
+        + (removedFrom.length ? ` It did come out of ${removedFrom.map((r) => r.file).join(' and ')}.` : '')
+        + (account
+          ? ` The install is already off the account, so the entry left in ${t.file} points at nothing — take it out by hand.`
+          : ''), extrasOf(err))
     }
   }
   /* «forced» — только когда сила и правда понадобилась: запись была, была не
      нашей и её всё равно сняли. Без записи в конфиге поле лгало скриптам. */
-  const forced = FORCE && !!entry && !ours
-  emit({ ok: true, id, removedFrom, account, ...(forced ? { forced: true } : {}) }, () => {
+  const forced = FORCE && !!theirs
+  emit({
+    ok: true, id, removedFrom: removedFrom.length ? removedFrom[0].file : null,
+    ...(removedFrom.length > 1 ? { alsoRemovedFrom: removedFrom.slice(1).map((r) => r.file) } : {}),
+    account, ...(forced ? { forced: true } : {}),
+  }, () => {
     say(green('✓') + ` ${safe(id)} removed`)
-    if (removedFrom) say(dim(`  out of ${client.name}: ${removedFrom}${forced ? ' (--force: not an entry of ours)' : ''}`))
+    for (const r of removedFrom) say(dim(`  out of ${client.name}: ${r.file}${r.ours ? '' : ' (--force: not an entry of ours)'}`))
     if (account) say(dim('  uninstalled on the account — the gateway will refuse calls to it now'))
     else say(dim(`  not on the account (${said(offAccount)}) — only the client entry was removed`))
-    for (const n of notes || []) say(dim(`  ${n}`))
+    for (const n of notes) say(dim(`  ${n}`))
   })
 }
 
@@ -1559,22 +1689,56 @@ function publisherOf(page) {
 }
 
 /* A CLIENT WITH NO SKILLS FOLDER GETS NO FOLDER. Said instead, with the way that client does
-   take a skill — for Claude Desktop, a zip with the folder inside it, through Settings. */
+   take a skill, as each one's documentation has it (checked 28 Sep 2026) and the site prints
+   it: Claude Desktop, ChatGPT and Perplexity a zip with the folder inside it
+   (bundle.zip?in=folder — Perplexity's Agent API wants exactly one top-level folder), Copilot
+   Studio a zip with SKILL.md at its root, the OpenAI Agents SDK and a bare API the folder
+   unpacked, with SKILL.md handed to the model by code. Claude Desktop's path was "Settings →
+   Capabilities → Skills"; it is Customize › Skills now (support.claude.com/en/articles/12512180). */
 function noFolder(verb, clientId, row, listing, name) {
   const called = (row && typeof row.name === 'string' && safe(row.name)) || (clientId === 'claude' ? 'Claude Desktop' : clientId)
   if (verb === 'remove') {
     return `${called} has no skills folder on disk, so there is nothing of it to delete here${clientId === 'claude'
-      ? ' — a skill added in Settings → Capabilities → Skills is taken out there. An earlier version of this tool wrote '
+      ? ' — a skill added under Customize › Skills is taken out there. An earlier version of this tool wrote '
         + `such skills into the project's .claude/skills/, and \`mcprush skill remove ${name}\` (Claude Code's folder) takes that out.`
-      : '.'}`
+      : clientId === 'agents'
+        ? ' — a folder you unpacked for it yourself is yours to delete. Up to 0.2.0 this tool wrote such skills into '
+          + `the project's .claude/skills/, and \`mcprush skill remove ${name}\` (Claude Code's folder) takes that out.`
+        : '.'}`
   }
-  const zip = `${host()}/api/skills/${encodeURIComponent(listing.id)}/bundle.zip`
-  return clientId === 'claude'
-    ? `Claude Desktop has no skills folder on disk: it takes a skill as a zip, through Settings → Capabilities → Skills. `
-      + `Nothing was written. Download it — ${zip}?in=folder — and add it there`
-      + `${listing.free === false ? '; a paid skill\'s zip is served against your key (Authorization: Bearer)' : ''}.`
-    : `${called} reads no skills folder from disk, so nothing was written. Download the skill as a zip — ${zip} — and `
-      + `add it the way ${called} takes skills.`
+  const at = `${host()}/api/skills/${encodeURIComponent(listing.id)}`
+  const paid = listing.free === false
+  const served = paid ? '; a paid skill\'s download is served against your key (Authorization: Bearer)' : ''
+  const unpack = `mkdir -p skills && curl -fsSL ${at}/bundle.tar.gz${paid ? ' -H "Authorization: Bearer $MCPRUSH_KEY"' : ''} | tar -xz -C skills`
+  switch (clientId) {
+    case 'claude':
+      return 'Claude Desktop has no skills folder on disk: it takes a skill as a zip, under Customize › Skills › + › '
+        + 'Create skill › Upload a skill — code execution and file creation has to be on, and on Team and Enterprise '
+        + `an owner turns on both it and Skills under Organization settings › Plugins & skills. Nothing was written. Download it — ${at}/bundle.zip?in=folder — and upload it there${served}.`
+    case 'openai':
+      return 'ChatGPT reads no skills folder from disk: it takes a skill as a zip, under Skills → Create → Upload from '
+        + 'your computer; the desktop and web apps keep separate lists. Nothing was written. Download it — '
+        + `${at}/bundle.zip?in=folder — and upload it there${served}.`
+    case 'copilot':
+      return 'Microsoft Copilot reads no skills folder from disk: Copilot Studio takes a skill as a zip with SKILL.md at '
+        + 'its root, under your agent → Build → Skills → Add skill → Upload a skill (agents on the GitHub Copilot '
+        + `harness). Nothing was written. Download it — ${at}/bundle.zip — and upload it there${served}.`
+    case 'perplexity':
+      return 'Perplexity reads no skills folder from disk: it takes a skill as a zip, in Perplexity Computer under '
+        + 'Skills → Create skill → Upload a skill, or on the Skills page of the API Portal for the Agent API. Nothing '
+        + `was written. Download it — ${at}/bundle.zip?in=folder — and upload it there${served}.`
+    case 'agents':
+      return 'The OpenAI Agents SDK reads no skills folder by itself, so nothing was written — the .claude/skills/ '
+        + 'folder earlier versions of this tool wrote is the Claude Agent SDK\'s. Unpack the folder yourself — '
+        + `${unpack} — and pass the SKILL.md inside it to the agent as its instructions, read from the file.`
+    case 'api':
+      return 'A call over the API reads no skills folder, so nothing was written. Unpack the folder yourself — '
+        + `${unpack} — and put the SKILL.md inside it into the prompt your code sends the model, with any reference `
+        + 'files, scripts or templates it points to.'
+    default:
+      return `${called} reads no skills folder from disk, so nothing was written. Download the skill as a zip — `
+        + `${at}/bundle.zip — and add it the way ${called} takes skills.`
+  }
 }
 
 async function skillOne(verb, name, clientId, opts = {}) {
@@ -1618,11 +1782,13 @@ async function skillOne(verb, name, clientId, opts = {}) {
   const row = (rows || []).find((r) => r.id === clientId) || null
   let declaredDir = null
   let none = false
-  if (row && Object.hasOwn(row, 'skillsDir')) {
+  /* a client that reads no folder by design is answered here first, whatever the table's row
+     says: its `agents` row named the Claude Agent SDK's folder for the OpenAI Agents SDK */
+  if (NO_SKILL_FOLDER.has(clientId)) {
+    none = true
+  } else if (row && Object.hasOwn(row, 'skillsDir')) {
     if (typeof row.skillsDir === 'string' && row.skillsDir.trim()) declaredDir = row.skillsDir
     else none = true
-  } else if (NO_SKILL_FOLDER.has(clientId)) {
-    none = true
   }
   if (none) throw new Refused(noFolder(verb, clientId, row, listing, name))
 
@@ -1909,10 +2075,14 @@ async function skillAdd(listing, where, clientId, quiet, ctx = {}) {
       say(dim(`  replaced what was there${state === 'ours' ? '' : state === 'other' ? ` (--force: it was ${safe(whose(manifest, ctx.folder))})` : ' (--force)'}`
         + (stale.length ? `; dropped by this version: ${safe(stale.join(', '))}` : '')))
     }
-    say(where.known
-      ? dim('  restart the client to pick it up')
-      : dim(`  ${clientId} does not declare a skills folder, so this went beside you — point your own `
-        + 'runtime at it, or paste SKILL.md in as a system prompt'))
+    say(!where.known
+      ? dim(`  ${clientId} does not declare a skills folder, so this went beside you — point your own `
+        + 'runtime at it, or paste SKILL.md in as a system prompt')
+      : LIVE_SKILLS.has(clientId)
+        ? dim(`  picked up without a restart: ${clientId === 'zed' ? 'Zed reads' : 'the DeepSeek Harness watches'} this folder as it changes`)
+        : clientId === 'gemini'
+          ? dim('  start a new Gemini CLI session, or run /skills reload in one that is already running')
+          : dim('  restart the client to pick it up'))
   })
 }
 

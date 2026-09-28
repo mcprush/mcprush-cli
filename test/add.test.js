@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, symlinkSync, chmodSync, utimesSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
 import { marketplace, run, scratch, status, server, installed, CLIENT_ROWS } from './harness.js'
+import { readClientFile, CLIENTS } from '../lib/config.js'
 
 /* the routes a single `add` touches, answered as the real ones answer */
 function routes(host, overrides = {}) {
@@ -394,7 +395,7 @@ test('an undocumented verb is refused before any request: stack remove, skill un
   }
 })
 
-test('the Zed settings Zed itself writes — comments and trailing commas — are read, and the note is printed', async () => {
+test('the Zed settings Zed itself writes — comments and trailing commas — are read, and kept on the write', async () => {
   const home = scratch('mcprush-zed-')
   const m = await marketplace((req) => routes(m.host)(req))
   try {
@@ -404,12 +405,15 @@ test('the Zed settings Zed itself writes — comments and trailing commas — ar
     writeFileSync(join(zed, 'settings.json'), stock)
     const r = await run(m.host, home, ['add', 'zeta', '--client', 'zed'])
     assert.equal(r.code, 0, r.err)
-    assert.match(r.out, /comments and trailing commas .* were dropped/)
-    const after = JSON.parse(readFileSync(join(zed, 'settings.json'), 'utf8'))
+    /* since 0.2.1 the entry goes in where it belongs and the rest stays as Zed wrote it */
+    assert.ok(!/were dropped/.test(r.out), r.out)
+    const text = readFileSync(join(zed, 'settings.json'), 'utf8')
+    assert.ok(text.startsWith(stock.slice(0, stock.lastIndexOf('}'))), 'every line before the new member is as it was:\n' + text)
+    const after = readClientFile({ ...CLIENTS.zed, file: join(zed, 'settings.json') })
     assert.equal(after.ui_font_size, 16)
     assert.deepEqual(after.theme, { mode: 'system', light: 'One Light', dark: 'One Dark' })
     assert.equal(after.context_servers.zeta.url, `${m.host}/gw/zeta/mcp`)
-    assert.equal(readFileSync(join(zed, 'settings.json.bak'), 'utf8'), stock, 'the original is kept byte for byte')
+    assert.ok(!existsSync(join(zed, 'settings.json.bak')), 'nothing was lost, so no .bak is left beside Zed\'s settings')
     /* the leniency is Zed's alone: a comment in ~/.claude.json still means somebody is editing it */
     writeFileSync(join(home, '.claude.json'), '{ "mcpServers": { /* a comment */ } }')
     const cc = await run(m.host, home, ['add', 'zeta'])

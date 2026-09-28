@@ -349,7 +349,8 @@ test('K14: skill add for Claude Desktop writes no folder, and says how that clie
     await withMarket(() => skills(cat, files, table), async (m, home) => {
       const r = await run(m.host, home, ['skill', 'add', 'acme/pdf-helper', '--client', 'claude-desktop', '--json'], { noKey: true })
       assert.equal(r.code, 1, `${table ? 'with' : 'without'} the marketplace table: ${r.out}`)
-      assert.match(r.json().error, /Settings → Capabilities → Skills/)
+      assert.match(r.json().error, /Customize › Skills › \+ › Create skill › Upload a skill/)
+      assert.ok(!/Settings → Capabilities/.test(r.json().error), 'the path Claude Desktop no longer has')
       assert.match(r.json().error, /\/api\/skills\/sk_pdf\/bundle\.zip\?in=folder/)
       assert.ok(!existsSync(join(home, '.claude', 'skills')), 'no folder in the project')
       assert.ok(!m.seen.some((s) => s.url.startsWith('/api/skills/')), 'no file was fetched either')

@@ -82,8 +82,13 @@ the reason there is none, and its page, so you can set it up by hand.
   comments in it or is half-edited, it stops and prints what to paste, in the
   field names of the client it was writing for. Zed's `settings.json` and VS
   Code's `.vscode/mcp.json` are the exceptions, because both are JSONC and
-  their editors write comments and trailing commas: those are dropped on the
-  write, the tool says so, and the original is kept in the `.bak`.
+  their editors write comments and trailing commas. Zed's is edited in place:
+  the entries under `context_servers` are added, replaced or taken out where
+  they stand, and every other byte — comments, trailing commas, formatting —
+  stays as it was; the result is parsed again, and anything the edit cannot
+  vouch for (a duplicate key, say) falls back to the whole-file write below.
+  VS Code's comments are dropped on the write, the tool says so, and the
+  original is kept in the `.bak`.
 - **It never replaces or deletes an entry it did not write.** Its own entries
   are gateway entries — an address at the marketplace with your key beside it.
   `add`, `add-list` and `stack add` refuse a name that already holds anything
@@ -103,6 +108,9 @@ what the client saved while the tool was on the network is kept. A parsed file
 is written back as JSON with two-space indentation — formatting is not
 preserved, the `.bak` keeps the original bytes — and a file holding an integer
 past 2^53, which JSON cannot carry unchanged, is refused rather than altered.
+Zed's `settings.json`, edited in place, gets a `.bak` only when the write
+replaces or takes out an entry this tool did not write (`--force`): then it is
+the one copy of what you had, and the output says so.
 A skill folder gets no `.bak`: `skill add` replaces an install you have not
 touched, refuses one you changed unless you pass `--force`, and `--force`
 keeps no copy.
@@ -118,19 +126,19 @@ keeps no copy.
 | `mcprush skill remove <skill>` | delete what `skill add` wrote and keep what you added; no key needed |
 | `mcprush stack add <stack>` | install a curated set: gateway members through the gateway, direct ones as the command or address the client starts |
 | `mcprush add-list <list>` | install one of your saved lists |
-| `mcprush budget [--max --alert]` | the account's monthly ceiling: checked when a subscription is bought, refusing an order that would pass it. Calls are limited by each install's own allowance, not by this figure. Owner or billing manager only; `--max` and `--alert` also need a write key |
+| `mcprush budget [--max --alert]` | the account's monthly ceiling: checked when a subscription is bought, refusing an order that would pass it. Calls are limited by each install's own allowance, not by this figure. Owner or billing manager only; `--max` and `--alert` also need a write key — and a key you log in with is the one `add` writes into your clients, so Dashboard → Limits is the simpler place to change it |
 | `mcprush list` | what this account has installed |
 | `mcprush whoami` | which account this key belongs to, its scope, when it expires and which seat minted it |
-| `mcprush relink` | after a new key (`login`), put it into every entry this tool wrote — Claude Code, Claude Desktop, Cursor, Windsurf, Zed — so they stop getting 401; the key is checked first, an entry you wrote is never touched, `--client` narrows it to one client and `--dry-run` only names them. VS Code asks for the key itself and has nothing to relink |
+| `mcprush relink` | after a new key (`login`), put it into every entry this tool wrote — Claude Code, Claude Desktop (both files, where the Store build's is there), Cursor, Windsurf, Devin Desktop, Zed — so they stop getting 401; the key is checked first, an entry you wrote is never touched, `--client` narrows it to one client and `--dry-run` only names them. VS Code asks for the key itself and has nothing to relink |
 | `mcprush logout` | forget the key `login` saved (and the host it pinned), and name the entries this tool wrote that still carry it: they keep working until the key is revoked in your dashboard |
-| `mcprush clients` | which clients can be written to on this machine |
+| `mcprush clients` | which clients can be written to on this machine, and the files each one is written to |
 
 Flags:
 
 | | |
 |---|---|
-| `--client <id>` | which client to write (default: `claude-code`; for `relink`, every client this tool writes); case does not matter, `claude-desktop`, `code` and `vs-code` are accepted, and a name the marketplace does not know is refused before anything is installed |
-| `--global` | for skills: the home folder rather than this project |
+| `--client <id>` | which client to write (default: `claude-code`; for `relink`, every client this tool writes); case does not matter, `claude-desktop`, `devin-desktop`, `code` and `vs-code` are accepted, and a name the marketplace does not know is refused before anything is installed |
+| `--global` | for skills: the folder the client reads in your home directory rather than this project's — for most clients the same path under home, for VS Code `~/.copilot/skills/`, for Devin Desktop and Windsurf `~/.agents/skills/` |
 | `--host <url>` | a different marketplace (default: mcprush.com); https, or `http://localhost` for one of your own — the key travels with every call, and a redirect is never followed. A trailing slash or a missing scheme is fine |
 | `--json` | machine-readable output, on every path — a refusal is `{ ok: false, error, status, … }` with only the fields the marketplace sent |
 | `--dry-run` | say what would be written, write nothing — `login` included. `stack add` refuses a dry run: the only route that resolves a stack also installs its free members |
@@ -140,8 +148,10 @@ Flags:
 A flag a command does not take is refused before anything happens, with the
 nearest one it does take: a typo in `--dry-run` must not become a real install.
 
-Amounts keep the dollar sign inside single quotes, or your shell eats it:
-`mcprush budget --max '$900/mo' --alert 80%`.
+Amounts are plain numbers, which every shell leaves alone, Windows `cmd.exe`
+included: `mcprush budget --max 900 --alert 80`. `--max '$900/mo' --alert 80%`
+works too, with the dollar sign inside single quotes so a POSIX shell does not
+eat it; `cmd.exe` keeps those quotes as characters, and they are dropped.
 
 ## Where things are kept
 
@@ -150,12 +160,31 @@ no catalogue cache, no history.
 
 Clients whose config path is documented and stable are written directly:
 Claude Code, Claude Desktop (`--client claude`, and `claude-desktop` is
-accepted too), Cursor, Windsurf, VS Code (per workspace) and Zed — whose
-`settings.json` is looked for where Zed keeps it on each platform:
-`~/.config/zed` on macOS, `$XDG_CONFIG_HOME/zed` on Linux, `%APPDATA%\Zed` on
-Windows. For anything else, `mcprush add <server> --json` prints the address
-and the header to paste, and `stack add` and `add-list` print the address
-beside each member.
+accepted too), Cursor, Devin Desktop (`--client devin`), Windsurf, VS Code
+(per workspace) and Zed — whose `settings.json` is looked for where Zed keeps
+it on each platform: `~/.config/zed` on macOS, `$XDG_CONFIG_HOME/zed` on Linux,
+`%APPDATA%\Zed` on Windows.
+
+**Devin Desktop is what Windsurf became**, and its default agent, Devin Local,
+reads `~/.config/devin/mcp_config.json` (`$XDG_CONFIG_HOME/devin` when set;
+`%APPDATA%\devin\mcp_config.json` on Windows): `--client devin` writes there,
+as `{ "url": …, "headers": … }`.
+`--client windsurf` still writes the legacy `~/.codeium/windsurf/mcp_config.json`,
+which Devin Local imports while its `read_config_from.windsurf` switch is on
+(the default), and says so. Until the marketplace's own table has a row for
+Devin Desktop, an install from `--client devin` is filed there under `windsurf`.
+
+For the other clients, which this tool does not write, `mcprush add <server>
+--client <id>` installs the server and prints that client's own way of adding
+it: `codex mcp add … --bearer-token-env-var MCPRUSH_KEY` for Codex CLI,
+`gemini mcp add --scope user --transport http -H …` for Gemini CLI,
+`grok mcp add --transport http … --header …` for Grok Build, the
+`[mcp_servers.<id>]` block with `http_headers` in `~/.codex/config.toml` for the
+ChatGPT desktop app, a `- insert:` row for the DeepSeek Harness, the address and
+where it goes for Copilot Studio and Perplexity, the Python for the OpenAI Agents
+SDK, and a `curl` for a bare API call — the same forms the site prints. `--json`
+carries that form as `setup`, beside the address and the header; `stack add` and
+`add-list` print the address beside each member.
 
 **Claude Desktop starts local processes and nothing else** — its
 `claude_desktop_config.json` has no entry for a remote address — so its entry
@@ -167,7 +196,10 @@ pinned: 0.1.38 is past the fix for CVE-2025-6514 and is the last release
 published by hand from its original repository, before the package changed
 maintainers. Node.js has to be installed for it; quit and reopen Claude
 Desktop to pick it up. A direct stack member with an address goes in the same
-way.
+way. On Windows, the build from the official installer (an MSIX package) reads
+`%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json`
+rather than `%APPDATA%\Claude\claude_desktop_config.json`; when that file is
+there, every command writes, relinks and removes the entry in both.
 
 **VS Code is the one exception to writing your key into a file.** Its config
 lives at `.vscode/mcp.json` inside the folder you have open — that is, inside
@@ -182,12 +214,23 @@ that folder is the workspace.
 Skills are written to the folder the client actually reads: `.claude/skills/`
 (Claude Code), `.cursor/skills/` (Cursor), `.github/skills/` (VS Code),
 `.agents/skills/` (Codex, Zed), `.gemini/skills/`, `.grok/skills/`,
-`.windsurf/skills/`. With `--global` the same path is used under your home
-directory instead of the current project. Claude Desktop, ChatGPT, Copilot and
-Perplexity read no skills folder from disk, and `skill add` for them writes
-nothing and says how that client takes a skill — for Claude Desktop, a zip
-through Settings → Capabilities → Skills, from
-`/api/skills/<id>/bundle.zip?in=folder`. A client neither table knows gets
+`.devin/skills/` (Devin Desktop), `.windsurf/skills/`, `.dsh/skills/` (DeepSeek
+Harness). With `--global` they go under your home directory instead: the same
+path for most clients, `~/.copilot/skills/` for VS Code and `~/.agents/skills/`
+for Devin Desktop and Windsurf, which read no `~/.github/skills/` or
+`~/.windsurf/skills/`. Zed and the DeepSeek Harness pick a new skill up without
+a restart; in Gemini CLI, `/skills reload` does it for a session already running.
+
+Claude Desktop, ChatGPT, Copilot, Perplexity, the OpenAI Agents SDK and a bare
+API read no skills folder from disk, and `skill add` for them writes nothing and
+says how that client takes a skill — for Claude Desktop, a zip from
+`/api/skills/<id>/bundle.zip?in=folder`, uploaded under Customize › Skills › + ›
+Create skill › Upload a skill (code execution and file creation has to be on;
+on Team and Enterprise an owner turns on both it and Skills under Organization
+settings › Plugins & skills); for ChatGPT and
+Perplexity the same zip, for Copilot Studio one with `SKILL.md` at its root, and
+for the Agents SDK or an API call the folder unpacked with `curl … | tar` and its
+`SKILL.md` handed to the model by your code. A client neither table knows gets
 `./skills/<name>` and is told so plainly.
 
 The marketplace can name that folder — a client changes where it looks, and the
@@ -196,7 +239,8 @@ do is name somewhere else: an answer is only used when it is a relative path
 ending in `skills`, resolving under the project or your home directory, with no
 step upwards and no symlink leading out. Anything else falls back to the table
 above without a word, because a marketplace naming `.ssh` is not a folder
-preference.
+preference. Nor can it give a folder to a client that reads none: those are
+answered before its table is asked.
 
 ## Environment
 
@@ -213,7 +257,7 @@ No dependencies and no build step: the files in `bin/` and `lib/` are what
 ships.
 
 ```sh
-npm test                 # 133 tests, node:test, no runner to install
+npm test                 # 143 tests, node:test, no runner to install
 npm pack --dry-run       # what would go to the registry
 node bin/mcprush.js --help
 ```
@@ -224,10 +268,13 @@ Point it at a marketplace of your own while you work:
 MCPRUSH_HOST=http://127.0.0.1:3000 MCPRUSH_KEY=… node bin/mcprush.js clients
 ```
 
-A release is a tag: `npm version patch`, then `git push --follow-tags`. The
-workflow in `.github/workflows/publish.yml` checks that the tag and
-`package.json` name the same version, runs the tests and publishes with
-provenance — see the comments in that file for the one-time npm setup.
+A release is a GitHub Release, not a tag alone: bump `package.json` (`npm
+version patch`), push the commit, then on GitHub draft a release whose tag is
+`v` and that version — `v0.2.1` for 0.2.1 — and publish it. The workflow in
+`.github/workflows/publish.yml` runs on the published release, checks that the
+tag and `package.json` name the same version and that the version is not in the
+registry yet, runs the tests and publishes with provenance — see the comments in
+that file for the one-time npm setup.
 
 Security reports: [SECURITY.md](SECURITY.md). Everything else:
 [mcprush.com/contact](https://mcprush.com/contact).

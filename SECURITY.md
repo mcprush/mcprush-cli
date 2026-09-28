@@ -18,8 +18,10 @@ Worth knowing before you read the code:
   opens the gateway. `MCPRUSH_KEY` overrides it.
 - **It writes into config files you did not write.** `~/.claude.json`,
   `~/.cursor/mcp.json`, `.vscode/mcp.json` and their siblings. Every write
-  keeps a `.bak`, a file that does not parse is left alone, and an entry this
-  tool did not write is neither replaced nor removed without `--force`.
+  keeps a `.bak` — Zed's `settings.json`, edited in place, only when `--force`
+  replaced or took out something of yours — a file that does not parse is left
+  alone, and an entry this tool did not write is neither replaced nor removed
+  without `--force`.
 - **It writes commands your client will run.** `stack add` writes a direct
   member as the command that starts it — `npx -y <package>`, `uvx <package>`,
   `docker run -i --rm <image>` — and Claude Desktop's entries start

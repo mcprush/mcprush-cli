@@ -4,6 +4,91 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions
 follow [semver](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-09-28
+
+A review of mcprush.com's docs on 28 Sep 2026 checked every client tab against
+that client's own documentation; this is what it found wrong in the tool the
+tabs send people to. No new writer for a client this tool did not write before,
+other than Devin Desktop; the rest is where entries go and what is printed.
+
+### Added
+- **`--client devin`: Devin Desktop**, which Windsurf became on 2 Jun 2026. Its
+  default agent, Devin Local, reads `~/.config/devin/mcp_config.json`
+  (`$XDG_CONFIG_HOME/devin` when set; `%APPDATA%\devin\mcp_config.json` on
+  Windows), and the entry is written there in its field names:
+  `{ "url": …, "headers": … }`, with `transport: "sse"` only for an SSE
+  member of a stack. `devin-desktop` is accepted too. Skills go
+  in `.devin/skills/`. The marketplace's table has no `devin` row yet, so the
+  install is filed under `windsurf` until it does. `mcprush clients` lists it.
+- `--client windsurf` still writes the legacy
+  `~/.codeium/windsurf/mcp_config.json`, and now says that Devin Local reads it
+  only through its Windsurf import (`read_config_from.windsurf`, on by default)
+  and that `--client devin` writes Devin's own file.
+
+### Fixed
+- **Claude Desktop on Windows, installed from the official installer, never saw
+  the entry.** That build is an MSIX package and reads
+  `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json`,
+  while this tool wrote `%APPDATA%\Claude\claude_desktop_config.json` only
+  (anthropics/claude-code#26073). When the Store build's file is there — the
+  file, not the folder, which can exist on an install that reads `%APPDATA%` —
+  `add`, `stack add` and `add-list` write both, `remove` takes the entry out of
+  both, and `relink` and `logout` read both. An entry of somebody else's in
+  either file is refused before anything is installed, as before. A link in
+  place of the Store file is left alone.
+- **Zed's settings lost their comments.** `settings.json` was parsed with its
+  comments stripped and written back whole, so the first `add` on a stock
+  install took out the lines Zed puts at the top, and left `settings.json.bak`
+  beside it. The entries under `context_servers` are now added, replaced and
+  taken out in the text, and everything else stays byte for byte; the result is
+  parsed again and has to match, or the old whole-file write is used. No `.bak`
+  is left, except when `--force` replaced or took out an entry this tool did not
+  write — then it is the one copy of it, as the output says.
+- **A client this tool does not write got a url line and a header line** that no
+  such client takes. `add --client <id>` now prints that client's own form, the
+  one its documentation gives and the site prints: `codex mcp add <id> --url …
+  --bearer-token-env-var MCPRUSH_KEY`; `gemini mcp add --scope user --transport
+  http -H "Authorization: Bearer $MCPRUSH_KEY" <id> <url>`; `grok mcp add
+  --transport http <id> <url> --header …`; for the ChatGPT desktop app a
+  `[mcp_servers.<id>]` block with `http_headers` in `~/.codex/config.toml`; for
+  the DeepSeek Harness a `- insert:` row with a `[A-Za-z0-9_-]{1,32}` server
+  name and the key read with `!!js`; the address and where it goes for Copilot
+  Studio and Perplexity (whose API-key option is not documented to carry the
+  key, and that is said); the Python for the OpenAI Agents SDK; a `curl` with
+  both Accept types for an API call. It says whether MCPRUSH_KEY is set in the
+  shell, and prints the key where the form needs it. `--json` keeps the header
+  and adds the form as `setup`.
+- **`skill add --client agents` wrote `.claude/skills/`**, the Claude Agent SDK's
+  folder, for the marketplace's `agents`, which is the OpenAI Agents SDK — and
+  that reads no skills folder. It now writes nothing and says how to unpack the
+  folder and hand its `SKILL.md` to the agent. A client that reads no folder by
+  design is answered before the marketplace's table, whose `agents` row still
+  names `.claude/skills/`.
+- **Claude Desktop's skill upload is under Customize › Skills › + › Create
+  skill › Upload a skill**, not Settings → Capabilities → Skills; code execution
+  and file creation has to be on, and on Team and Enterprise an owner turns
+  skills on first. ChatGPT, Copilot and Perplexity are each told their own
+  upload path and the zip it takes — the folder zip (`?in=folder`) for ChatGPT
+  and Perplexity, `SKILL.md` at the root for Copilot Studio — and an API call
+  the folder unpacked into `skills/`.
+- **`--global` wrote skills where VS Code and Devin do not look.** It put the
+  project's path under HOME: `~/.github/skills/` for VS Code, which reads
+  `~/.copilot/skills/`, and `~/.windsurf/skills/` for Windsurf, which Devin does
+  not read. VS Code now gets `~/.copilot/skills/`, Devin Desktop and Windsurf
+  `~/.agents/skills/`, taken before the folder the marketplace names for the
+  project.
+- After `skill add`, Zed and the DeepSeek Harness are said to pick the skill up
+  without a restart — both read their folder live — and Gemini CLI is pointed at
+  `/skills reload`; "restart the client" stays for the rest.
+- **`budget` in Windows `cmd.exe`.** `--max '$900/mo'` reached the tool with its
+  single quotes, which `cmd.exe` keeps, and was refused as no amount. One pair of
+  quotes around a value is dropped now, and the hints lead with the plain form,
+  `--max 900 --alert 80`, which every shell leaves alone.
+- `mcprush clients` said `add --json` prints "the address and header to paste";
+  it names `add --client <id>` and the client's own form.
+- The README said a release is a tag; the publish workflow runs on a published
+  GitHub Release whose tag is `v<version>`.
+
 ## [0.2.0] — 2026-09-28
 
 An audit of 0.1.4 on 27 Sep 2026 — the client, its contract with the
