@@ -4,6 +4,241 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions
 follow [semver](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] — 2026-09-29
+
+A test on 29 Sep 2026 of every command mcprush.com's docs and pages print, run
+the way a visitor would run it, and a retest the same evening of every line
+again, in zsh, bash and PowerShell; this is what they found wrong in what the
+tool says and writes.
+
+### Changed
+- **`add` writes a direct server, as `stack add` does.** A server the client
+  starts itself, or dials at its publisher's address, was refused with its start
+  line — "runs on your own machine … set up the way its page shows" — so the one
+  command the home page shows for every client, `npx mcprush@latest add
+  <server>`, worked for the few hundred servers behind the gateway and for none
+  of the rest of the catalogue. It is now written into the client as the entry
+  its page prints, with its variables, its placeholders and its line beside it,
+  with nothing installed on the account and no key asked for; for a client this
+  tool does not write it prints that client's own form and exits 1, as `stack
+  add` does; in VS Code such an entry gets no key prompt beside it, since it names
+  no key. `remove` takes out the entry it writes for such a server — without
+  a key, since there is no account to ask — where it refused every one as "not
+  a gateway entry this tool wrote"; one you changed is still refused.
+- **`skill add` for Claude Desktop, ChatGPT, Copilot and Perplexity saves the zip
+  that client uploads**, as `<slug>.zip` in the folder it runs in — the folder
+  inside it, or `SKILL.md` at its root for Copilot Studio; a paid one against
+  your key — and says where to upload it. It printed an address, and the only
+  line to fetch it with was a bash one (`curl … &&`), a parse error in Windows
+  PowerShell. A zip already there is replaced only with `--force`, unless it is
+  the same one.
+- **`--help` says how its commands are run**: `run each as npx mcprush@latest
+  <command> (or npm i -g mcprush, then mcprush <command>)`, under the title. It
+  listed every command as a bare `mcprush <command>`, "command not found" to
+  everybody who reached it through npx.
+- **`stack add` for a client this tool does not write exits 1, with no tick.**
+  For Codex, Gemini CLI, Grok Build, ChatGPT, DeepSeek, Copilot, Perplexity, the
+  Agents SDK and a bare API it drew ✓, "0 installed, 4 to set up by hand" and
+  exit 0, though nothing had been written anywhere. The first line now says
+  "<stack> — nothing was written: codex is set up by hand, so paste each of
+  these into it yourself", and every member follows in that client's own form,
+  as its page's tab prints it: `codex mcp add <id> --env K="$K" -- <command>`,
+  `gemini mcp add --scope user -e 'K=$K' <id> <command> -- <args>`,
+  `grok mcp add <id> -e 'K=${K}' -- <command>`, a `- insert:` row for DeepSeek's
+  `cordis.patch.yml`, the Agents SDK's Python, the command for ChatGPT's and
+  Perplexity's dialogs — or, where the client has no form that would connect
+  (a package for Copilot Studio, an SSE server for DeepSeek or Copilot), the
+  reason. Gateway members get the client's own form of the gateway entry, as
+  `add` prints it. `--json` says `ok: false`, `wrote: null` and `why`, and
+  carries each form (`direct[].setup`, `gatewaySetup`).
+
+### Fixed
+- **A Python server that mcp 2.x broke starts again.** Since mcp 2.0 (28 Jul
+  2026) a fresh `uvx` resolves mcp 2.x for every package that declares `mcp>=1`
+  and still uses the old API, and the server dies before it answers — 14 of 24
+  live PyPI listings sampled. The marketplace now sends the launcher's own
+  options (`source.with`), and they are written before the package: `uvx --with
+  'mcp<2' policy-pulse-mcp`, `uvx --python 3.13 --with 'qiskit<2.1' …`. The same
+  field carries docker's, between `--rm` and the `-e` list: `--platform
+  linux/amd64` for an image published for amd64 only, which does not start on
+  Apple silicon without it, and the `-v` a server that keeps its data in a
+  volume starts empty without. Only options a listing needs are let through —
+  `--with <requirement>` and `--python <version>` for uvx; `--platform`, `-v`
+  with a named volume or the publisher's placeholder, `-p`, and `-e NAME=value`
+  with a value the publisher fixed (pmwiki-mcp's `-e WIKI_DIR=/wiki.d`) for
+  docker — and nothing that fetches from elsewhere, mounts a path of the
+  marketplace's choosing, hands the container a variable of yours (a bare `-e
+  NAME`) or widens what a container may do. The entry 0.2.1 wrote without
+  them is replaced unasked; a copy of yours with values in it is kept and told
+  "your entry starts it without --with 'mcp<2', which it needs to start".
+- **A package with a program of its own is started with `--package=<pkg>`,**
+  not `-p <pkg>`: Claude Code up to 2.1.167 read a bare `-p` as its own
+  `--print` and refused the line ("unknown option --scope"). npm reads the long
+  form the same way. The `-p` entry an earlier version wrote is ours to replace.
+- **A package that serves HTTP is not written as a stdio process.** The
+  transport was read for an address only, so a package whose manifest says
+  `streamable-http` or `sse` was written as a command the client talks to on
+  stdin, and it never answered there: "Failed to connect". It is now written as
+  the address it listens on on this machine (`source.localUrl`), and the line
+  that starts it is printed to run in a terminal of its own, with the variables
+  it reads from there; without that address it is not written at all, with the
+  reason. An address given as 0.0.0.0, where such a server listens, is written
+  as 127.0.0.1: Windows does not connect to 0.0.0.0, and the bridge Claude
+  Desktop is given takes plain http for localhost only. A package whose own
+  arguments switch it to stdio (`-t stdio`) is a process, as the page reads it.
+  The stdio entry an earlier version wrote for it is replaced. Copilot
+  Studio, Perplexity's connectors and ChatGPT on the web are told that an
+  address on your machine is out of their reach.
+- **A step before the first start is printed.** Gmail's server lists no tools
+  until `npx -y @klodr/gmail-mcp auth` has run once, google-sheet-mcp needs
+  `google-mcp init`; the marketplace sends that line now (`source.setup`), and
+  `add` and `stack add` print it as "run once first", for every client.
+- **A tool around servers is not a server.** A bridge, a test runner or an
+  installer the marketplace marks `not-a-server` is refused with that reason,
+  rather than written as a line no client can talk to; and an address marked
+  as failing on start says so, not "does not answer".
+- **The lines for clients this tool does not write survive PowerShell.** Gemini
+  CLI's and Grok Build's gateway lines were three lines joined with backslashes
+  and "$MCPRUSH_KEY": in PowerShell a trailing backslash is no continuation and
+  "$MCPRUSH_KEY" is PowerShell's own empty variable. Each is one line now, the
+  header in single quotes — `-H 'Authorization: Bearer ${MCPRUSH_KEY}'` — which
+  every shell passes as it is and the client fills in when it connects, so the
+  key stays out of its file. Codex puts nothing in for `${K}`, so its line
+  keeps `--env K="$K"`, and on Windows a second line for PowerShell follows it
+  with `--env K="$env:K"`; a bare API call gets an `Invoke-RestMethod` line the
+  same way. Grok's `--` is written `'--'`: PowerShell drops a bare one on its
+  way into npm's grok.ps1, and Grok then reads the server's `-y` as its own and
+  writes nothing — and Gemini CLI's too, which without it took docker's `-e` and
+  a server's `-t stdio` as its own `--env` and `--transport`. A word with a comma
+  in it (`--toolsets system,read,validate`) is quoted in those lines: through
+  a .ps1 wrapper PowerShell hands it on as `system read validate`. An SSE
+  server goes into Codex and Grok Build through `mcp-remote`, as the site prints
+  it: both dial an address over Streamable HTTP only, and the `--url` entry was
+  saved and never connected. On Windows the sentence about PowerShell's execution policy
+  ("running scripts is disabled") is said once beside such a line. The Agents
+  SDK's and an API call's skill line no longer starts `mkdir -p skills &&`,
+  which PowerShell's mkdir stops at the second time: curl makes the folder; it
+  is printed on a line of its own, with the PowerShell one under it on Windows,
+  not inside the sentence, where a triple click copied the words around it.
+- **A paid listing is refused with its price.** "is a paid listing … a browser
+  flow" came with the checkout and no price, though the page said the install
+  would stop with it; it now reads "Timekeeper is a paid listing (from $19 a
+  month). Buy it at the checkout link below …", from the listing's plans, and a
+  paid skill the same way. A marketplace that answers a paid server's 401 with
+  its checkout and price has both printed before the login. A paid server the
+  client starts itself is refused the same way before anything is written, as
+  `stack add` skips one; and `remove` without a key still says "No key held
+  yet", not a sentence about adding or buying.
+- **A name copied with its sentence's punctuation is read without it**:
+  `stack add pr-desk:` was "There is no stack called pr-desk:". A trailing `:`,
+  `;`, `,` or `.` after a letter or digit is dropped, in `add`, `remove`, `stack
+  add` and `skill add`.
+- **`skill add` says what the client will make of the skill**, where it went
+  unnoticed: that Gemini CLI and Grok read a project's skills only in a folder
+  they trust (and `--global` everywhere); that Gemini CLI, Codex, Copilot and
+  Grok list it by the name its `SKILL.md` gives it, not its folder; that Copilot
+  in VS Code refuses a description over 1,024 characters; that a `SKILL.md` with
+  no name and description at its top is skipped by Claude Code and Gemini CLI;
+  and which files the marketplace did not hand out (`missing`), with why — over
+  the size limit, a type it does not carry, too deep, or past the number of
+  files it hands out.
+- **An address that answers nowhere is not written.** The marketplace's weekly
+  probe marks an address whose TLS handshake fails or whose host is gone from
+  DNS (`noPackage` with `noPackageWhy` `tls` or `dns`, kultur-dev), and the
+  page prints no line for it; `stack add` wrote it anyway, because an address
+  was never counted as gone. It is now refused with the reason — "its address
+  fails the secure (TLS) handshake, so no client can connect to it" — and so is
+  a package the marketplace marks as failing on start (`fails-to-start`: "its
+  package stops with an error as soon as it starts"), which was told "not on
+  its registry any more".
+- **An address with the publisher's marks in it keeps them.** `new URL()`
+  wrote `…/mcp?apikey=<your-key>` as `…?apikey=%3Cyour-key%3E`, which nobody
+  reads as "fill this in". The address is written as sent, and the person is
+  told to put their own value in place of `<your-key>`, as for a placeholder
+  among a package's arguments. `add` of such an address says the same.
+- **`add` of an address the marketplace calls yours** — a placeholder for your
+  own deployment, or one on your own machine — said "runs on your own
+  machine"; it now says it answers at an address you run yourself.
+- **The skill line for the Agents SDK and an API call** was `curl … | tar -xz`,
+  which exits 0 on a 401 on macOS; it is `curl -fsSL -o skills/<slug>.tar.gz …
+  && tar -xzf …`, as the site prints it.
+- **The line that starts a direct server lost the server's own arguments.**
+  `npx -y firebase-tools` prints its help and exits (the server is
+  `firebase-tools mcp`); `@coglet/logsafe` without `mcp` and
+  `@cablate/mcp-google-map` without `--stdio` listen on HTTP ports and never
+  answer on stdin; grafana/mcp-grafana's image starts SSE unless told
+  `-t stdio`. The marketplace now sends them (`source.args`), and `stack add`
+  writes them last — after the package or program for npm and PyPI, after the
+  image for docker — into every entry and every printed line. They are held to
+  what a config can carry (strings, no control characters, at most 40 of 300
+  characters each); a placeholder among them, such as `<path to .duckdb>`, is
+  named with "put your own value in place of … in <file>". An entry 0.2.1 wrote
+  for the same member without them is rewritten unasked; a copy of yours with
+  values in it is kept and told "your entry starts it without -t stdio, which
+  the server needs". Printed lines are quoted for a shell as the site quotes
+  them, so `uvx --from 'edgartools[ai]' …` pastes into zsh.
+- **Every hint named `mcprush login`, which is "command not found" through
+  npx** (exit 127 in zsh). Each hint now names a command that runs where the
+  person is: `npx mcprush@latest login`, `printf %s "$MCPRUSH_KEY" | npx
+  mcprush@latest login`, `npx mcprush@latest remove …`, `… relink`,
+  `… skill add …`, with the dashboard's Access address beside the ones about a
+  key. A 401 that comes without a way out — "That key is not live" — gets "Mint
+  a key at https://mcprush.com/dashboard#access, then: printf %s
+  "$MCPRUSH_KEY" | npx mcprush@latest login".
+- **The key was asked for before the listing was named.** `add`, `skill add`
+  and `stack add` refused with "No key held yet" first, so a person made an
+  account and a key to learn that the server is connected straight to its
+  publisher, that the "skill" is a server, that the skill is paid, or that the
+  stack is all servers the client starts itself. The key is now asked for when
+  the next step writes to the account — an install, a gateway entry — and the
+  rest is answered without one: a direct server's line and page, "is an MCP
+  server, not a skill", "Pro is a paid skill ($9 a month). Buy it in the
+  browser, then run `npx mcprush@latest login`…" with the checkout, and a
+  stack's direct members written as before, with "1 member goes through the
+  gateway and needs a key" for the rest. A marketplace that says which listing
+  wants the key ("… runs behind the mcprush gateway, so adding it needs a key
+  from your account") keeps its sentence, with the ways to log in after it; one
+  that still answers a bare 401 without a key gets the old sentence.
+- **A stack's skills were skipped in silence.** Each is now printed with the
+  command that writes it: `npx mcprush@latest skill add <publisher>/<slug>
+  --client <client>` (`--json`: `skills`), named as its page names it (from the
+  marketplace's `command`, else `pub`/`slug`, else the key). For a client that
+  reads no skills folder — Claude Desktop, ChatGPT, Copilot, Perplexity, the
+  Agents SDK, a bare API — the heading says so, and each command prints how
+  that client takes the skill instead.
+- **A docker image the marketplace calls `direct` was "connected straight to its
+  publisher… nothing to install"** (github-mcp, grafana-mcp), though the reader
+  pulls and runs it. A package or an image is said to run on your own machine,
+  whatever the delivery; and after "it starts with" comes what it will not start
+  without: "needs BRAVE_API_KEY in the server's environment", from the
+  marketplace's new `needs` (or the required names in `source.env`).
+- A package the marketplace marks as gone from its registry (`noPackage`) is
+  named "its package is not on its registry any more, so there is nothing to
+  install" and not written, rather than tried; the line the marketplace built
+  for it is not printed (`no_package` is read too, as the site reads it).
+- **`whoami` said "in 1 day" of a key with 45 minutes left.** Under a day it
+  gives the time and "in N hours", under an hour "in N minutes"; whole days are
+  counted down, so a key with 25 hours left reads "in 1 day" beside tomorrow's
+  date rather than "in 2 days".
+- **`remove` said a free server was refused from then on, and it was not.** The
+  gateway takes a free server again on the first call a live key makes to it,
+  so a client that still held the entry had the install back within a second.
+  For a free listing the line now reads "uninstalled on the account — a free
+  server comes back the next time any client calls it with a live key: take it
+  out of every client, or revoke the key"; for a paid one it still says "the
+  gateway will refuse calls to it now". The marketplace's uninstall answer now
+  says `free`, and the listing route's `free` stands in for a marketplace that
+  does not yet; with neither, the line says what is true either way. A server
+  that does not go through the gateway — connected straight to its publisher,
+  or run on your own machine — neither comes back nor is refused, so for one of
+  those the line says "it does not go through the gateway, so any client that
+  still has its entry keeps using it: take it out of every client". `--json`
+  carries `free` when it is known, and `direct: true` for such a server.
+- **`--help` started the descriptions at four different columns**, 32 to 35:
+  the spaces were typed by hand. The pad is now worked out from each command as
+  typed, before the escape codes a terminal gets, so every description starts
+  at one column in a pipe and on a terminal alike.
+
 ## [0.2.1] — 2026-09-28
 
 A review of mcprush.com's docs on 28 Sep 2026 checked every client tab against

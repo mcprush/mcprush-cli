@@ -81,7 +81,17 @@ test('--force takes out an entry that is not ours, and says so', async () => {
   }
 })
 
-test('a gateway entry the account no longer holds is still taken out, with exit 0', async () => {
+/* WHAT THE ACCOUNT LINE SAYS. The gateway takes a free server again on the first call a live
+   key makes to it, so "the gateway will refuse calls to it now" is said of a paid one only. The
+   uninstall route now says `free`; for an older one the listing route's `free` stands in,
+   and with neither the line is the one true either way. */
+const COMES_BACK = 'uninstalled on the account — a free server comes back the next time any client calls it with a live key: take it out of every client, or revoke the key'
+const REFUSED = 'uninstalled on the account — the gateway will refuse calls to it now'
+const EITHER = 'uninstalled on the account — a paid server is refused from now on, but a free one comes back the next time any client calls it with a live key'
+/* and a server the gateway is not in the path of neither comes back nor is refused */
+const OWN_SOURCE = 'uninstalled on the account — it does not go through the gateway, so any client that still has its entry keeps using it: take it out of every client'
+
+test('a gateway entry the account no longer holds is still taken out, with exit 0; one the account held says whether a call brings it back', async () => {
   const home = scratch('mcprush-rm-')
   const m = await marketplace(routes(null, () => NOT_INSTALLED))
   try {
@@ -90,12 +100,52 @@ test('a gateway entry the account no longer holds is still taken out, with exit 
     assert.equal(r.code, 0, r.err)
     assert.match(r.out, /stale removed/)
     assert.match(r.out, /not on the account .* only the client entry was removed/)
+    for (const line of [COMES_BACK, REFUSED, EITHER]) assert.ok(!r.out.includes(line), 'nothing was uninstalled, so nothing is said about calls')
     const servers = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers
     assert.deepEqual(Object.keys(servers), ['other'])
     assert.ok(existsSync(join(home, '.claude.json.bak')))
   } finally {
     await m.close()
     rmSync(home, { recursive: true, force: true })
+  }
+
+  /* [id, what the uninstall route answers, what the listing route answers, the line, `free` in --json, `direct` in --json] */
+  const cases = [
+    ['freebie', { free: true }, { free: true, priceType: 'free' }, COMES_BACK, true],
+    ['paidonce', { free: false }, { free: false, priceType: 'one_time' }, REFUSED, false],
+    ['oldfree', {}, { free: true, priceType: 'free' }, COMES_BACK, true],
+    ['oldpaid', {}, { free: false, priceType: 'one_time' }, REFUSED, false],
+    ['gone', {}, null, EITHER, undefined],
+    ['straight', { free: true }, { free: true, priceType: 'free', delivery: 'direct' }, OWN_SOURCE, true, true],
+    ['onmachine', {}, { free: true, priceType: 'free', local: true, delivery: 'local' }, OWN_SOURCE, true, true],
+  ]
+  const home2 = scratch('mcprush-rm-')
+  const m2 = await marketplace((req) => {
+    const c = cases.find(([id]) => req.url === '/api/cli/listing/' + id || (req.body && req.body.listing === id))
+    if (!c) return status(404, { error: 'There is no endpoint at that address.' })
+    if (req.url === '/api/cli/uninstall') return { ok: true, id: c[0], ...c[1] }
+    return c[2] ? server(m2.host, c[0], c[2]) : status(404, { safe: true, error: `There is no listing called ${c[0]}.` })
+  })
+  try {
+    for (const [id, , , line, free, direct] of cases) {
+      seed(home2, { [id]: gw(m2.host, id) })
+      const r = await run(m2.host, home2, ['remove', id])
+      assert.equal(r.code, 0, r.err)
+      assert.ok(r.out.includes(line), `${id}: ${r.out}`)
+      assert.deepEqual(JSON.parse(readFileSync(join(home2, '.claude.json'), 'utf8')).mcpServers, {}, id)
+      seed(home2, { [id]: gw(m2.host, id) })
+      const j = await run(m2.host, home2, ['remove', id, '--json'])
+      assert.equal(j.code, 0, j.err)
+      assert.equal(j.json().account, true)
+      assert.equal(j.json().free, free, `${id}: --json says free only when it is known`)
+      assert.equal(j.json().direct, direct, `${id}: --json says direct only for a server outside the gateway`)
+      for (const other of [COMES_BACK, REFUSED, EITHER, OWN_SOURCE].filter((l) => l !== line)) {
+        assert.ok(!r.out.includes(other), `${id}: one account line, not two`)
+      }
+    }
+  } finally {
+    await m2.close()
+    rmSync(home2, { recursive: true, force: true })
   }
 })
 

@@ -42,6 +42,33 @@ const NO_LINE = [
     source: null, start: null, page: 'https://mcprush.com/pub/from-source' },
 ]
 
+/* members whose server needs words after the package or image (source.args, 29 Sep 2026) and
+   variables the marketplace lists as required (`needs`); the start line is the marketplace's,
+   quoted for a shell the way the page quotes it */
+const WITH_ARGS = [
+  { id: 'firebase', name: 'Firebase',
+    source: { kind: 'npm', value: 'firebase-tools', url: null, run: null, transport: 'stdio', noEntry: false, args: ['mcp'] },
+    start: 'npx -y firebase-tools mcp', page: 'https://mcprush.com/firebase/firebase-tools-mcp' },
+  { id: 'grafana', name: 'Grafana',
+    source: { kind: 'image', value: 'docker.io/grafana/mcp-grafana:1.6.0', url: null, run: null, transport: 'stdio', noEntry: false,
+      env: [{ key: 'GRAFANA_URL', required: true }], args: ['-t', 'stdio'] },
+    needs: ['GRAFANA_URL'],
+    start: 'docker run -i --rm -e GRAFANA_URL docker.io/grafana/mcp-grafana:1.6.0 -t stdio', page: 'https://mcprush.com/grafana/grafana-mcp' },
+  { id: 'duckdb', name: 'DuckDB',
+    source: { kind: 'pypi', value: 'mcp-server-duckdb', url: null, run: null, transport: 'stdio', noEntry: false, args: ['--db-path', '<path to .duckdb>'] },
+    start: "uvx mcp-server-duckdb --db-path '<path to .duckdb>'", page: 'https://mcprush.com/ktanaka101/duckdb-mcp' },
+  { id: 'edgar', name: 'EDGAR',
+    source: { kind: 'pypi', value: 'edgartools[ai]', url: null, run: 'edgartools-mcp', transport: 'stdio', noEntry: false, env: [] },
+    needs: ['EDGAR_IDENTITY'],
+    start: "uvx --from 'edgartools[ai]' edgartools-mcp", page: 'https://mcprush.com/dgunning/edgartools-mcp' },
+]
+/* a stack's skills, as the route skips them: with the publisher and the page's slug, and in the
+   older shape with the key alone */
+const SKILLS = [
+  { id: 'sk_pdf', name: 'PDF helper', kind: 'skill', pub: 'acme', slug: 'pdf-helper', why: 'a skill — read by your client, not routed' },
+  { id: 'writer', name: 'Writer', why: 'a skill — read by your client, not routed' },
+]
+
 const status = (code, body, headers) => ({ $status: code, $body: body, $headers: headers || {} })
 
 function marketplace(answer) {
@@ -50,7 +77,7 @@ function marketplace(answer) {
     let body = ''
     req.on('data', (c) => { body += c })
     req.on('end', () => {
-      seen.push({ method: req.method, url: req.url, body: body ? JSON.parse(body) : null })
+      seen.push({ method: req.method, url: req.url, body: body ? JSON.parse(body) : null, auth: req.headers.authorization || null })
       let out = typeof answer === 'function' ? answer(seen.at(-1)) : answer
       /* an answer with a status and headers of its own, as harness.js spells it */
       const reply = out && typeof out === 'object' && '$status' in out ? out : { $status: 200, $body: out, $headers: {} }
@@ -69,7 +96,7 @@ function marketplace(answer) {
 /* Asynchronous on purpose: the fake marketplace lives in this same process, and spawnSync
    would block the event loop it answers from — the child then waits on a request nobody
    serves until its own thirty-second timeout. */
-function run(host, home, argv) {
+function run(host, home, argv, opts = {}) {
   return new Promise((done) => {
     const child = spawn(process.execPath, [BIN, ...argv], {
       cwd: home,
@@ -79,6 +106,8 @@ function run(host, home, argv) {
         const e = { ...process.env, HOME: home, MCPRUSH_HOST: host, MCPRUSH_KEY: 'mk_test_key', NO_COLOR: '1',
           XDG_CONFIG_HOME: join(home, '.config'), APPDATA: join(home, 'AppData', 'Roaming'), USERPROFILE: home }
         delete e.FLATPAK_XDG_CONFIG_HOME
+        /* `opts.noKey`: a person who has not logged in */
+        if (opts.noKey) delete e.MCPRUSH_KEY
         return e
       })(),
     })
@@ -92,17 +121,19 @@ function run(host, home, argv) {
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'mcprush-stack-'))
 
-test('direct members are written into a client with a command form, beside the gateway ones', async () => {
+test('direct members are written into a client with a command form, beside the gateway ones — with their own arguments, and the skills named with their command', async () => {
   const home = scratch()
+  const members = [...DIRECT, ...WITH_ARGS]
   const m = await marketplace((req) => ({
     ok: true, stack: 'data', name: 'Data stack',
     added: [{ id: 'gw-one', url: `${m.host}/gw/gw-one/mcp` }],
     skipped: [
       { id: 'paid-one', name: 'Paid one', why: 'paid — buy it in the browser' },
-      ...DIRECT.map((d) => ({ id: d.id, name: d.name, why: 'runs from its own package — this marketplace is not in the path: ' + d.start })),
+      ...members.map((d) => ({ id: d.id, name: d.name, why: 'runs from its own package — this marketplace is not in the path: ' + d.start })),
+      ...SKILLS,
     ],
-    direct: DIRECT,
-    counts: { added: 1, direct: DIRECT.length, skipped: 1 + DIRECT.length },
+    direct: members,
+    counts: { added: 1, direct: members.length, skipped: 1 + members.length + SKILLS.length },
     page: 'https://mcprush.com/stack/data',
   }))
   try {
@@ -122,15 +153,111 @@ test('direct members are written into a client with a command form, beside the g
     assert.deepEqual(servers['remote-http'], { type: 'http', url: 'https://mcp.example.com/mcp' })
     assert.ok(!JSON.stringify(servers['remote-sse']).includes('mk_test_key'), 'no key of ours in a direct entry')
 
-    assert.match(r.out, /1 installed, 5 written from their own source/)
+    /* [0] the server's own arguments go last: after the package or program, after the image */
+    assert.deepEqual(servers.firebase, { command: 'npx', args: ['-y', 'firebase-tools', 'mcp'] })
+    assert.deepEqual(servers.grafana, {
+      command: 'docker', args: ['run', '-i', '--rm', '-e', 'GRAFANA_URL', 'docker.io/grafana/mcp-grafana:1.6.0', '-t', 'stdio'],
+      env: { GRAFANA_URL: '<your value>' },
+    })
+    assert.deepEqual(servers.duckdb, { command: 'uvx', args: ['mcp-server-duckdb', '--db-path', '<path to .duckdb>'] })
+    /* a name the marketplace lists in `needs` is required even where `env` does not say so */
+    assert.deepEqual(servers.edgar, { command: 'uvx', args: ['--from', 'edgartools[ai]', 'edgartools-mcp'], env: { EDGAR_IDENTITY: '<your value>' } })
+
+    assert.match(r.out, /1 installed, 9 written from their own source/)
     assert.match(r.out, /\+ scoped-npm\s+npx -y @scope\/pkg/, 'the line the client will run is printed beside the entry')
+    assert.match(r.out, /\+ firebase\s+npx -y firebase-tools mcp\n/)
+    assert.match(r.out, /\+ grafana\s+docker run -i --rm -e GRAFANA_URL docker\.io\/grafana\/mcp-grafana:1\.6\.0 -t stdio\n/)
+    /* quoted for a shell, as the page quotes it: zsh globs `[ai]` and `<…>` otherwise */
+    assert.match(r.out, /\+ duckdb\s+uvx mcp-server-duckdb --db-path '<path to \.duckdb>'\n/)
+    assert.match(r.out, /\+ edgar\s+uvx --from 'edgartools\[ai\]' edgartools-mcp\n/)
+    assert.ok(!/printed a different line/.test(r.out), 'the marketplace\'s quoted line is the same line')
+    assert.match(r.out, /put your own value in place of <path to \.duckdb> in .*\.claude\.json/)
+    assert.match(r.out, /set GRAFANA_URL in .*\.claude\.json: the entry holds <your value> until you do/)
+    assert.match(r.out, /set EDGAR_IDENTITY in /)
     assert.match(r.out, /· paid-one — paid/, 'the paid member is still named')
     assert.ok(!/· scoped-npm/.test(r.out), 'a written member is not listed as skipped as well')
     assert.ok(!/Set up by hand/.test(r.out), 'nothing was left to do by hand')
+    /* [13] the skills, with the command that writes each — not skipped in silence */
+    assert.match(r.out, /Skills — folders rather than servers; this tool writes each one:\n\s+npx mcprush@latest skill add acme\/pdf-helper\n\s+npx mcprush@latest skill add writer\n/)
+    assert.ok(!/· sk_pdf|· writer/.test(r.out), 'a skill is not listed as skipped as well')
     assert.equal(m.seen[0].body.client, 'claude-code')
+
+    const j = await run(m.host, home, ['stack', 'add', 'data', '--client', 'cursor', '--json'])
+    assert.equal(j.code, 0, j.err)
+    assert.deepEqual(j.json().skills, [
+      { id: 'sk_pdf', name: 'PDF helper', command: 'npx mcprush@latest skill add acme/pdf-helper --client cursor' },
+      { id: 'writer', name: 'Writer', command: 'npx mcprush@latest skill add writer --client cursor' },
+    ])
+    const fire = j.json().direct.find((d) => d.id === 'firebase')
+    assert.deepEqual(fire.entry, { command: 'npx', args: ['-y', 'firebase-tools', 'mcp'] })
+    assert.equal(j.json().direct.find((d) => d.id === 'duckdb').fill[0], '<path to .duckdb>')
   } finally {
     await m.close()
     rmSync(home, { recursive: true, force: true })
+  }
+
+  /* [13] WITHOUT A KEY. The direct members need none, and the marketplace names them without
+     one; a member behind the gateway comes back for want of a key, and is said to. */
+  const home2 = scratch()
+  /* a direct member whose line has the word "key" in it is not one that needs ours */
+  const KEYRING = { id: 'keyring', name: 'Keyring',
+    source: { kind: 'npm', value: '@acme/key', url: null, run: null, transport: 'stdio', noEntry: false },
+    start: 'npx -y @acme/key', page: 'https://mcprush.com/acme/key-vault' }
+  const DIRECT2 = [...DIRECT, KEYRING]
+  const m2 = await marketplace((req) => ({
+    ok: true, stack: 'data', name: 'Data stack', added: [],
+    skipped: [
+      { id: 'gw-two', name: 'GW two', why: 'needs a key from your account', needsKey: true },
+      /* the route's own sentence, without the flag */
+      { id: 'gw-three', name: 'GW three',
+        why: 'goes through the mcprush gateway, so it needs a key from your account — log in with `npx mcprush@latest login` and run this again' },
+      ...DIRECT2.map((d) => ({ id: d.id, name: d.name, why: 'runs from its own package — this marketplace is not in the path: ' + d.start })),
+      /* a skill in the route's shape: its page's name in `command`, no pub or slug */
+      { id: 'lingzhi227-deep-research', name: 'Deep research', why: 'a skill — read by your client, not routed',
+        command: 'npx mcprush@latest skill add lingzhi227/deep-research' },
+    ],
+    direct: DIRECT2, counts: { added: 0, direct: DIRECT2.length, skipped: 3 + DIRECT2.length },
+    page: 'https://mcprush.com/stack/data',
+  }))
+  try {
+    const r = await run(m2.host, home2, ['stack', 'add', 'data', '--client', 'cursor'], { noKey: true })
+    assert.equal(r.code, 0, r.err)
+    const asked = m2.seen.find((x) => x.url === '/api/cli/stack')
+    assert.equal(asked.auth, null, 'the stack was asked for without a key')
+    const servers = JSON.parse(readFileSync(join(home2, '.cursor', 'mcp.json'), 'utf8')).mcpServers
+    assert.deepEqual(Object.keys(servers).sort(), DIRECT2.map((d) => d.id).sort(), 'every direct member written, keyless')
+    assert.ok(!/No key held/.test(r.out + r.err))
+    assert.match(r.out, /2 members go through the gateway and need a key: run `npx mcprush@latest login`, then this command again/)
+    assert.match(r.out, new RegExp(`${m2.host.replace(/[.:/]/g, '\\$&')}/dashboard#access`))
+    /* the page's name for the skill, from the route's command */
+    assert.match(r.out, /this tool writes each one:\n\s+npx mcprush@latest skill add lingzhi227\/deep-research --client cursor\n/)
+    const j2 = JSON.parse((await run(m2.host, home2, ['stack', 'add', 'data', '--client', 'cursor', '--json'], { noKey: true })).out)
+    assert.deepEqual(j2.needKey, ['gw-two', 'gw-three'])
+    /* Claude Desktop reads no skills folder: the heading does not promise one */
+    const d = await run(m2.host, home2, ['stack', 'add', 'data', '--client', 'claude'], { noKey: true })
+    assert.equal(d.code, 0, d.err)
+    assert.match(d.out, /Skills — Claude Desktop reads no skills folder, so each of these says how it takes the skill instead:\n\s+npx mcprush@latest skill add lingzhi227\/deep-research --client claude\n/)
+    assert.ok(!/this tool writes each one/.test(d.out))
+  } finally {
+    await m2.close()
+    rmSync(home2, { recursive: true, force: true })
+  }
+
+  /* and a stack with nothing in it but the login is the old refusal, before any write */
+  const home3 = scratch()
+  const m3 = await marketplace(() => ({
+    ok: true, stack: 'gw', name: 'Gateway only', added: [], direct: [],
+    skipped: [{ id: 'gw-two', name: 'GW two', why: 'needs a key from your account', needsKey: true }],
+    page: 'https://mcprush.com/stack/gw',
+  }))
+  try {
+    const r = await run(m3.host, home3, ['stack', 'add', 'gw', '--client', 'cursor'], { noKey: true })
+    assert.equal(r.code, 1)
+    assert.match(r.err, /No key held yet\. Run `npx mcprush@latest login`/)
+    assert.ok(!existsSync(join(home3, '.cursor', 'mcp.json')))
+  } finally {
+    await m3.close()
+    rmSync(home3, { recursive: true, force: true })
   }
 })
 
@@ -172,22 +299,72 @@ test('each client gets the field names it documents', async () => {
   }
 })
 
-test('a client this tool does not write gets every direct member printed with its line and page', async () => {
+test('a client this tool does not write gets no tick and exit 1, and every member in that client\'s own form', async () => {
   const home = scratch()
-  const m = await marketplace({ ok: true, stack: 's', name: 'S', added: [], skipped: [], direct: DIRECT, counts: { added: 0, direct: 5, skipped: 0 } })
+  const members = [...DIRECT, WITH_ARGS[1], NO_LINE[0]]
+  const m = await marketplace({
+    ok: true, stack: 's', name: 'S', added: [], skipped: [...SKILLS], direct: members,
+    counts: { added: 0, direct: members.length, skipped: SKILLS.length },
+  })
   try {
     const r = await run(m.host, home, ['stack', 'add', 's', '--client', 'codex'])
-    assert.equal(r.code, 0, r.err)
-    assert.match(r.out, /0 installed, 5 to set up by hand/)
-    assert.match(r.out, /codex is set up by hand — nothing was written to a config/)
-    assert.ok(!/Authorization: Bearer/.test(r.out), 'no gateway member, so no header to paste')
-    assert.match(r.out, /Set up by hand/)
-    for (const d of DIRECT) {
+    /* nothing is in Codex until the person pastes it there: no tick, and not exit 0 */
+    assert.equal(r.code, 1, r.err)
+    assert.ok(!r.out.includes('✓'), 'no tick')
+    assert.match(r.out, /^S — nothing was written: codex is set up by hand, so paste each of these into it yourself\n/)
+    assert.ok(!/installed|to set up by hand,/.test(r.out.split('\n')[0]), 'no tally of installs on the first line')
+    for (const d of members) {
       assert.ok(r.out.includes(d.name), `${d.name} is named`)
-      assert.ok(r.out.includes(d.start), `${d.name}'s start line is printed`)
       assert.ok(r.out.includes(d.page), `${d.name}'s page is printed`)
     }
+    /* Codex's own command for each, with the variables the server needs and its own arguments */
+    assert.match(r.out, /codex mcp add scoped-npm -- npx -y @scope\/pkg\n/)
+    assert.match(r.out, /codex mcp add wingman -- uvx --from wingman-mcp wingman\n/)
+    assert.match(r.out, /codex mcp add boxed -- docker run -i --rm ghcr\.io\/org\/image:1\.2\n/)
+    /* SSE through the bridge: Codex dials an address over Streamable HTTP only (as the site, I25) */
+    assert.match(r.out, /codex mcp add remote-sse '--' npx -y mcp-remote@0\.1\.38 https:\/\/mcp\.example\.com\/sse --transport sse-only\n/)
+    assert.match(r.out, /codex mcp add grafana --env GRAFANA_URL="\$GRAFANA_URL" -- docker run -i --rm -e GRAFANA_URL docker\.io\/grafana\/mcp-grafana:1\.6\.0 -t stdio\n/)
+    assert.match(r.out, /It takes GRAFANA_URL from your shell, so export it first\./)
+    /* a member with no line keeps its reason */
+    assert.match(r.out, /Module only\n\s+its package declares no console script/)
+    /* and the skills, with the client named */
+    assert.match(r.out, /npx mcprush@latest skill add acme\/pdf-helper --client codex\n/)
+    assert.match(r.out, /npx mcprush@latest skill add writer --client codex\n/)
     assert.ok(!existsSync(join(home, '.claude.json')), 'and no file was written anywhere')
+
+    const j = await run(m.host, home, ['stack', 'add', 's', '--client', 'codex', '--json'])
+    assert.equal(j.code, 1)
+    const doc = j.json()
+    assert.equal(doc.ok, false)
+    assert.equal(doc.wrote, null)
+    assert.match(doc.why, /codex is set up by hand, so nothing was written/)
+    assert.equal(doc.direct.find((d) => d.id === 'boxed').setup.code, 'codex mcp add boxed -- docker run -i --rm ghcr.io/org/image:1.2')
+
+    /* every client this tool does not write, in its own form (lib/byhand.js, as the page's tab) */
+    const forms = {
+      /* the separator quoted: through gemini.ps1 a bare -- is dropped, and Gemini CLI takes docker's -e and
+         the server's -t stdio as its own --env and --transport (I16, as the site prints it) */
+      gemini: [/gemini mcp add --scope user -e 'GRAFANA_URL=\$GRAFANA_URL' grafana docker '--' run -i --rm -e GRAFANA_URL docker\.io\/grafana\/mcp-grafana:1\.6\.0 -t stdio\n/,
+        /gemini mcp add --scope user --transport sse remote-sse https:\/\/mcp\.example\.com\/sse\n/],
+      /* the separator quoted, so PowerShell hands it on to grok.ps1 (I16) */
+      grok: [/grok mcp add grafana -e 'GRAFANA_URL=\$\{GRAFANA_URL\}' '--' docker run -i --rm -e GRAFANA_URL docker\.io\/grafana\/mcp-grafana:1\.6\.0 -t stdio\n/,
+        /grok mcp add --transport http remote-http https:\/\/mcp\.example\.com\/mcp\n/],
+      deepseek: [/serverName: grafana\n\s+transport: stdio\n\s+command: docker\n\s+args: \['run', '-i', '--rm', '-e', 'GRAFANA_URL', 'docker\.io\/grafana\/mcp-grafana:1\.6\.0', '-t', 'stdio'\]\n\s+env:\n\s+GRAFANA_URL: !!js process\.env\.GRAFANA_URL\n/,
+        /takes only stdio and Streamable HTTP/],
+      openai: [/\n\s+docker run -i --rm -e GRAFANA_URL docker\.io\/grafana\/mcp-grafana:1\.6\.0 -t stdio\n/, /Set GRAFANA_URL in the server's environment there/],
+      copilot: [/cannot start a process on your machine/, /\n\s+https:\/\/mcp\.example\.com\/mcp\n/],
+      perplexity: [/PerplexityXPC/, /choose SSE/],
+      agents: [/"env": \{"GRAFANA_URL": os\.environ\["GRAFANA_URL"\]\}/, /MCPServerSse/],
+      api: [/It speaks stdio, so there is no address to call over HTTP/, /It speaks SSE/],
+    }
+    for (const [c, want] of Object.entries(forms)) {
+      const x = await run(m.host, home, ['stack', 'add', 's', '--client', c])
+      assert.equal(x.code, 1, `${c}: ${x.err}`)
+      assert.ok(!x.out.includes('✓'), `${c}: no tick`)
+      assert.match(x.out, new RegExp(`^S — nothing was written: ${c} is set up by hand`), c)
+      for (const re of want) assert.match(x.out, re, c)
+      assert.match(x.out, new RegExp(`skill add acme/pdf-helper --client ${c}`), c)
+    }
   } finally {
     await m.close()
     rmSync(home, { recursive: true, force: true })
@@ -199,8 +376,10 @@ test('a member with no start line is printed with the reason and its page, and d
   const m = await marketplace({
     ok: true, stack: 's', name: 'S', added: [],
     skipped: NO_LINE.map((d) => ({ id: d.id, name: d.name, why: 'built from its own source — ' + d.page })),
-    direct: [...NO_LINE, DIRECT[0]],
-    counts: { added: 0, direct: 3, skipped: 2 },
+    /* and a package gone from its registry, for which the marketplace still built a line */
+    direct: [...NO_LINE, DIRECT[0], { id: 'jamgate', name: 'Jamgate',
+      source: { kind: 'npm', value: 'jamgate', noPackage: true }, start: 'npx -y jamgate', page: 'https://mcprush.com/pub/jamgate' }],
+    counts: { added: 0, direct: 4, skipped: 2 },
   })
   try {
     const r = await run(m.host, home, ['stack', 'add', 's', '--client', 'claude-code'])
@@ -209,8 +388,11 @@ test('a member with no start line is printed with the reason and its page, and d
     assert.deepEqual(servers['scoped-npm'], { command: 'npx', args: ['-y', '@scope/pkg'] })
     assert.equal(servers['module-only'], undefined)
     assert.equal(servers['from-source'], undefined)
+    assert.equal(servers.jamgate, undefined)
+    assert.match(r.out, /Jamgate\n\s+its package is not on its registry any more, so there is nothing to install\n/)
+    assert.ok(!/npx -y jamgate/.test(r.out), 'no line for a package that is not there')
 
-    assert.match(r.out, /1 written from its own source, 2 to set up by hand/)
+    assert.match(r.out, /1 written from its own source, 3 to set up by hand/)
     assert.match(r.out, /Module only\n\s+its package declares no console script/)
     assert.ok(r.out.includes('https://mcprush.com/pub/module-only'))
     assert.match(r.out, /From source\n\s+built from its own source/)
@@ -350,9 +532,41 @@ test('what the marketplace names becomes a process argument, so it is bounded', 
 
   /* what real listings carry passes */
   assert.deepEqual(directStart({ kind: 'npm', value: '@scope/pkg@1.2.3' }), { command: 'npx', args: ['-y', '@scope/pkg@1.2.3'] })
-  assert.deepEqual(directStart({ kind: 'npm', value: 'pkg', run: 'prog' }), { command: 'npx', args: ['-y', '-p', 'pkg', 'prog'] })
+  /* the long form, which Claude Code up to 2.1.167 does not take for its own --print (I37) */
+  assert.deepEqual(directStart({ kind: 'npm', value: 'pkg', run: 'prog' }), { command: 'npx', args: ['-y', '--package=pkg', 'prog'] })
   assert.deepEqual(directStart({ kind: 'pypi', value: 'pkg[extra]' }), { command: 'uvx', args: ['pkg[extra]'] })
   assert.deepEqual(directStart({ kind: 'image', value: 'ghcr.io/org/img:1.0@sha256:abcd' }), { command: 'docker', args: ['run', '-i', '--rm', 'ghcr.io/org/img:1.0@sha256:abcd'] })
+
+  /* [0] the server's own arguments go last — after the package, the program, the image — and are
+     bounded as what a config and a terminal can carry; a placeholder among them is named */
+  assert.deepEqual(directStart({ kind: 'npm', value: 'firebase-tools', args: ['mcp'] }),
+    { command: 'npx', args: ['-y', 'firebase-tools', 'mcp'], runArgs: ['mcp'] })
+  assert.deepEqual(directStart({ kind: 'npm', value: 'pkg', run: 'prog', args: ['--stdio'] }).args, ['-y', '--package=pkg', 'prog', '--stdio'])
+  assert.deepEqual(directStart({ kind: 'pypi', value: 'aggrete', args: ['--demo'] }).args, ['aggrete', '--demo'])
+  assert.deepEqual(directStart({ kind: 'image', value: 'grafana/mcp-grafana:1.6.0', env: [{ key: 'GRAFANA_URL', required: true }], args: ['-t', 'stdio'] }).args,
+    ['run', '-i', '--rm', '-e', 'GRAFANA_URL', 'grafana/mcp-grafana:1.6.0', '-t', 'stdio'])
+  assert.deepEqual(directStart({ kind: 'pypi', value: 'mcp-server-duckdb', args: ['--db-path', '<path to .duckdb>'] }).fill, ['<path to .duckdb>'])
+  assert.deepEqual(directStart({ kind: 'npm', value: 'pkg', args: [] }), { command: 'npx', args: ['-y', 'pkg'] }, 'no arguments, the shape as before')
+  for (const bad of ['mcp', [1], [''], ['a\u001b[2Jb'], ['x'.repeat(301)], Array(41).fill('a')]) {
+    assert.ok(directStart({ kind: 'npm', value: 'pkg', args: bad }).why, `${JSON.stringify(bad).slice(0, 40)} had to be refused`)
+  }
+  /* `needs` makes a name required, and passes it to a container */
+  assert.deepEqual(directStart({ kind: 'image', value: 'img', env: ['A'] }, ['A', 'B']).args, ['run', '-i', '--rm', '-e', 'A', '-e', 'B', 'img'])
+  assert.deepEqual(directStart({ kind: 'npm', value: 'pkg', env: ['A'] }, ['A']).need, ['A'])
+  assert.equal(directStart({ kind: 'npm', value: 'pkg', env: ['A'] }, ['A']).may, undefined)
+  /* a package no longer on its registry has nothing to start (the marketplace's no_package) */
+  assert.match(directStart({ kind: 'npm', value: 'jamgate', noPackage: true }).why, /not on its registry any more/)
+  /* and says why, in the site's words: a package that fails to start is not "gone from its registry" */
+  assert.match(directStart({ kind: 'npm', value: 'gitlab-mcp', noPackage: true, noPackageWhy: 'fails-to-start' }).why, /stops with an error as soon as it starts/)
+  assert.match(directStart({ kind: 'pypi', value: 'aifp', noPackage: true, noPackageWhy: 'not-found' }).why, /is not on its registry, so/)
+  /* a dead address is refused too (kultur-dev: TLS), not written to dial nowhere */
+  assert.match(directStart({ kind: 'url', value: 'https://kultur.dev/mcp', noPackage: true, noPackageWhy: 'tls' }).why, /TLS/)
+  assert.match(directStart({ kind: 'url', value: 'https://gone.example.org/mcp', noPackage: true, noPackageWhy: 'dns' }).why, /no longer exists/)
+  /* the publisher's marks in an address are kept as written, not percent-encoded, and named to fill */
+  const av = directStart({ kind: 'url', value: 'https://mcp.alphavantage.co/mcp?apikey=<your-key>' })
+  assert.equal(av.url, 'https://mcp.alphavantage.co/mcp?apikey=<your-key>')
+  assert.deepEqual(av.fill, ['<your-key>'])
+  assert.equal(directStart({ kind: 'url', value: 'https://mcp.example.com/mcp' }).fill, undefined)
 
   /* a package without a program has no line, as on the page; a repository has none either */
   assert.match(directStart({ kind: 'npm', value: 'pkg', noEntry: true }).why, /no executable/)
@@ -421,7 +635,7 @@ test('a member the account already holds is still written, from the install rout
   }
 })
 
-test('a client this tool does not write is given the address beside each id, under the header line', async () => {
+test('a client this tool does not write is given each gateway member in its own form, with the key it needs', async () => {
   const home = scratch()
   const m = await marketplace((req) => ({
     ok: true, stack: 's', name: 'S',
@@ -429,10 +643,17 @@ test('a client this tool does not write is given the address beside each id, und
   }))
   try {
     const r = await run(m.host, home, ['stack', 'add', 's', '--client', 'codex'])
-    assert.equal(r.code, 0, r.err)
-    assert.match(r.out, /each address below goes with: Authorization: Bearer mk_test_key/)
-    assert.match(r.out, new RegExp(`\\+ github\\s+${m.host}/gw/github/mcp`))
+    assert.equal(r.code, 1, r.err)
+    assert.match(r.out, /nothing was written: codex is set up by hand/)
+    assert.match(r.out, /1 installed on your account, through the gateway/)
+    assert.ok(r.out.includes(`codex mcp add github --url ${m.host}/gw/github/mcp --bearer-token-env-var MCPRUSH_KEY`), r.out)
+    assert.match(r.out, /MCPRUSH_KEY is set in this shell/)
     assert.ok(!existsSync(join(home, '.claude.json')))
+    const j = await run(m.host, home, ['stack', 'add', 's', '--client', 'copilot', '--json'])
+    const g = j.json().gatewaySetup[0]
+    assert.equal(g.id, 'github')
+    assert.equal(g.code, `${m.host}/gw/github/mcp`)
+    assert.match(g.how, /Copilot Studio/)
   } finally {
     await m.close()
     rmSync(home, { recursive: true, force: true })

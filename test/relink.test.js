@@ -223,6 +223,6 @@ test('K37: a login with a new key says how many entries of ours carry another on
     assert.equal(r.code, 0, r.err + r.out)
     assert.equal(r.json().staleEntries, 2, 'github and linear carry mcpr_old; fresh already has mcpr_new')
     const human = await run(m.host, home, ['login', '--host', m.host], { noKey: true, input: 'mcpr_new\n' })
-    assert.match(human.out, /2 entries this tool wrote carry another key — `mcprush relink` puts this one in them/)
+    assert.match(human.out, /2 entries this tool wrote carry another key — `npx mcprush@latest relink` puts this one in them/)
   })
 })

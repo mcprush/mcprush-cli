@@ -6,6 +6,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { platform } from 'node:os'
+import { pathToFileURL } from 'node:url'
 import { readdirSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, statSync, utimesSync, realpathSync } from 'node:fs'
 import { marketplace, run, scratch, status, server, installed, CLIENT_ROWS } from './harness.js'
 import { directStart, directEntryFor, ownEntry, printable, pasteHint, CLIENTS, readClientFile, sourceEnv, launcherEnv, BRIDGE_SPEC } from '../lib/config.js'
@@ -226,6 +227,32 @@ test('K1/K9: the entry 0.1.4 wrote for a direct member is rewritten without --fo
     assert.ok(!/tok[^\n]*values of yours/.test(c.out), 'no values of the person\'s to speak of')
     assert.match(c.out, /set TOK in .*mcp\.json: your entry does not have it yet, and the server needs it to work/)
   })
+
+  /* [0] AND THE ENTRY 0.2.1 WROTE WITHOUT THE SERVER'S OWN ARGUMENTS. It started a member that is
+     no server as it stood (`npx -y firebase-tools` prints its help): it is ours, and rewritten
+     with them, unasked. A copy of the person's with values in it is kept — and told the word
+     it lacks. */
+  const withArgs = [
+    { id: 'firebase', name: 'Firebase', start: 'npx -y firebase-tools mcp', source: { kind: 'npm', value: 'firebase-tools', args: ['mcp'] } },
+    { id: 'grafana', name: 'Grafana', start: 'docker run -i --rm -e GRAFANA_URL grafana/mcp-grafana -t stdio',
+      source: { kind: 'image', value: 'grafana/mcp-grafana', env: [{ key: 'GRAFANA_URL', required: true }], args: ['-t', 'stdio'] } },
+  ]
+  await withMarket({ ok: true, stack: 's', name: 'S', added: [], skipped: [], direct: withArgs, counts: { added: 0, direct: 2, skipped: 0 } }, async (m, home) => {
+    mkdirSync(join(home, '.cursor'), { recursive: true })
+    writeFileSync(join(home, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: {
+      firebase: { command: 'npx', args: ['-y', 'firebase-tools'] },
+      grafana: { command: 'docker', args: ['run', '-i', '--rm', '-e', 'GRAFANA_URL', 'grafana/mcp-grafana'], env: { GRAFANA_URL: 'https://grafana.example.com' } },
+    } }))
+    const c = await run(m.host, home, ['stack', 'add', 's', '--client', 'cursor', '--json'])
+    assert.equal(c.code, 0, c.out + c.err)
+    assert.deepEqual(c.json().conflicts, [], 'neither is refused as somebody else\'s')
+    const cur = JSON.parse(readFileSync(join(home, '.cursor', 'mcp.json'), 'utf8')).mcpServers
+    assert.deepEqual(cur.firebase, { command: 'npx', args: ['-y', 'firebase-tools', 'mcp'] }, 'rewritten with its argument')
+    assert.deepEqual(cur.grafana.env, { GRAFANA_URL: 'https://grafana.example.com' }, 'the person\'s copy is kept')
+    assert.deepEqual(c.json().direct.find((d) => d.id === 'grafana').missingArgs, ['-t', 'stdio'])
+    const h = await run(m.host, home, ['stack', 'add', 's', '--client', 'cursor'])
+    assert.match(h.out, /= grafana\s+already in the file, with values of yours — left as it is\n\s+your entry starts it without -t stdio, which the server needs: add them at the end of its args in .*mcp\.json/)
+  })
 })
 
 /* ---- K13 ----------------------------------------------------------------------------------- */
@@ -338,6 +365,8 @@ function skills(catalogue, files, clients = CLIENT_ROWS) {
     if (f) return { files: Object.keys(files[f[1]]).map((p) => ({ path: p, bytes: files[f[1]][p].length })) }
     const one = /^\/api\/skills\/([^/]+)\/file\/(.+)$/.exec(path)
     if (one) return files[one[1]][decodeURIComponent(one[2])]
+    /* the zip an upload client takes: only its first bytes are read, to tell a zip from a page */
+    if (/^\/api\/skills\/[^/]+\/bundle\.zip$/.test(path)) return Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(40)])
     return status(404, { error: 'There is no endpoint at that address.' })
   }
 }
@@ -347,16 +376,19 @@ test('K14: skill add for Claude Desktop writes no folder, and says how that clie
   const files = { sk_pdf: { 'SKILL.md': '# pdf\n' } }
   for (const table of [CLIENT_ROWS, null]) {
     await withMarket(() => skills(cat, files, table), async (m, home) => {
+      /* the zip it uploads, saved in this folder (I09) — no folder, no file by file */
       const r = await run(m.host, home, ['skill', 'add', 'acme/pdf-helper', '--client', 'claude-desktop', '--json'], { noKey: true })
-      assert.equal(r.code, 1, `${table ? 'with' : 'without'} the marketplace table: ${r.out}`)
-      assert.match(r.json().error, /Customize › Skills › \+ › Create skill › Upload a skill/)
-      assert.ok(!/Settings → Capabilities/.test(r.json().error), 'the path Claude Desktop no longer has')
-      assert.match(r.json().error, /\/api\/skills\/sk_pdf\/bundle\.zip\?in=folder/)
+      assert.equal(r.code, 0, `${table ? 'with' : 'without'} the marketplace table: ${r.out}`)
+      assert.match(r.json().upload, /Customize › Skills › \+ › Create skill › Upload a skill/)
+      assert.ok(!/Settings → Capabilities/.test(r.json().upload), 'the path Claude Desktop no longer has')
+      assert.ok(m.seen.some((s) => s.url === '/api/skills/sk_pdf/bundle.zip?in=folder'), 'the zip with the folder inside it')
+      assert.ok(existsSync(join(home, 'pdf-helper.zip')))
       assert.ok(!existsSync(join(home, '.claude', 'skills')), 'no folder in the project')
-      assert.ok(!m.seen.some((s) => s.url.startsWith('/api/skills/')), 'no file was fetched either')
+      assert.ok(!m.seen.some((s) => /^\/api\/skills\/[^/]+\/(?:files|file\/)/.test(s.url)), 'no file was fetched one by one')
+      rmSync(join(home, 'pdf-helper.zip'))
       const rm = await run(m.host, home, ['skill', 'remove', 'acme/pdf-helper', '--client', 'claude', '--json'], { noKey: true })
       assert.equal(rm.code, 1)
-      assert.match(rm.json().error, /mcprush skill remove acme\/pdf-helper/)
+      assert.match(rm.json().error, /`npx mcprush@latest skill remove acme\/pdf-helper`/)
     })
   }
 })
@@ -453,7 +485,7 @@ test('K28: an abandoned lock folder is refused with its path at once, not spun o
     assert.ok(Date.now() - t0 < 10_000, 'and quickly')
     assert.equal(r.code, 1)
     assert.match(r.json().error, /\.claude\.json\.lock is a folder/)
-    assert.match(r.json().error, /mcprush remove alpha/, 'the install that stands is named with its undo')
+    assert.match(r.json().error, /`npx mcprush@latest remove alpha`/, 'the install that stands is named with its undo, as a command that runs from npx')
     assert.ok(existsSync(lock), 'somebody else\'s folder is not deleted')
   })
 })
@@ -539,6 +571,12 @@ test('K38: login reads a piped key, keeps --json pure, and does not steer the ke
     assert.equal(none.code, 1)
     assert.match(none.json().error, /Pipe it in/)
     assert.ok(!/pass it as `mcprush login <key>`/.test(none.json().error))
+    /* [12] the command it names runs where the person is: through npx, a bare `mcprush` is
+       "command not found" (exit 127 in zsh); and it says where a key comes from */
+    assert.match(none.json().error, /`printf %s "\$MCPRUSH_KEY" \| npx mcprush@latest login`/)
+    assert.match(none.json().error, /run `npx mcprush@latest login` in a terminal/)
+    assert.ok(!/(^|[^@\w/-])mcprush login/.test(none.json().error), 'no bare `mcprush login`')
+    assert.equal(none.json().how, `${m.host}/dashboard#access`)
   })
 })
 
@@ -703,13 +741,43 @@ test('K44: a skill file that starts with #! is made executable, and the manifest
 
 /* ---- K57 ----------------------------------------------------------------------------------- */
 
-test('K57: the help names --key and skill remove --force, and the README counts the tests there are', async () => {
+/* Where each row's description starts, on the text as a person sees it: the escape codes out,
+   then the first run of two or more spaces after the command or flag. A further line of a
+   description (under --force) starts where its first non-space is. */
+const helpColumns = (text) => {
+  const lines = text.replace(/\x1b\[[0-9;]*m/g, '').split('\n')
+  const at = (l) => { const m = /^ {2}\S.*?( {2,})(?=\S)/.exec(l); return m[0].length }
+  const commands = lines.filter((l) => l.startsWith('  mcprush ')).map(at)
+  const flags = lines.filter((l) => l.startsWith('  --')).map(at)
+  const further = lines.filter((l) => /^ {3,}\S/.test(l)).map((l) => l.search(/\S/))
+  return { commands, flags, further }
+}
+
+test('K57: the help names --key and skill remove --force, lines its descriptions up in a pipe and on a terminal, and the README counts the tests there are', async () => {
   await withMarket({}, async (m, home) => {
     const r = await run(m.host, home, ['--help'])
     assert.match(r.out, /--key <key>/)
     assert.match(r.out, /skill remove: delete it whole/)
     assert.match(r.out, /write a skill's folder/)
     assert.ok(!/bought skill/.test(r.out))
+
+    /* 0.2.1 started the descriptions at four columns, 32 to 35, from spaces typed by hand */
+    const piped = helpColumns(r.out)
+    assert.ok(!r.out.includes('\x1b['), 'no colour in a pipe')
+    assert.equal(piped.commands.length, 13)
+    assert.deepEqual([...new Set(piped.commands)], [34], 'every command description starts at one column')
+    assert.equal(piped.flags.length, 7)
+    assert.deepEqual([...new Set([...piped.flags, ...piped.further])], [18], 'and every flag description at another')
+
+    /* on a terminal bold() and dim() add escape codes, which take no column but do count in
+       .length: the pad has to be worked out on the text before them. The child is told its
+       stdout is a terminal, which is all the tool asks. */
+    const preload = join(home, 'tty.mjs')
+    writeFileSync(preload, "Object.defineProperty(process.stdout, 'isTTY', { value: true })\n")
+    const t = await run(m.host, home, ['--help'], { env: { NO_COLOR: '', NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` } })
+    assert.equal(t.code, 0, t.err)
+    assert.ok(t.out.includes('\x1b[1mmcprush add\x1b[0m'), 'the terminal copy is painted')
+    assert.deepEqual(helpColumns(t.out), piped, 'and lines up exactly as the piped one')
   })
   const count = readdirSync(TEST_DIR).filter((n) => n.endsWith('.test.js'))
     .reduce((n, f) => n + (readFileSync(new URL(f, TEST_DIR), 'utf8').match(/^test\(/gm) || []).length, 0)
@@ -749,29 +817,133 @@ test('K31/K46: add-list takes a listing answered 404 or 409 as a skip, and reads
   })
 })
 
-test('K36: add names a direct server\'s start line and page, not "no verified endpoint yet", and installs nothing', async () => {
+test('K36: add writes a direct server\'s own entry, not "no verified endpoint yet", and installs nothing on the account — without a key, with what it needs', async () => {
+  const page = (id) => `https://mcprush.com/pub/${id}`
   await withMarket((m) => routes(m.host, {
     '/api/cli/listing/remote1': () => server(m.host, 'remote1', {
       ready: false, delivery: 'direct', start: 'https://mcp.example.com/mcp', page: 'https://mcprush.com/mcp/pub/remote1',
+      source: { kind: 'url', value: 'https://mcp.example.com/mcp', transport: 'streamable-http' },
     }),
-    '/api/cli/listing/pkg1': () => server(m.host, 'pkg1', { ready: false, local: true, delivery: 'local', start: 'npx -y pkg1', page: 'https://mcprush.com/mcp/pub/pkg1' }),
+    '/api/cli/listing/pkg1': () => server(m.host, 'pkg1', { ready: false, local: true, delivery: 'local', start: 'npx -y pkg1', page: 'https://mcprush.com/mcp/pub/pkg1',
+      source: { kind: 'npm', value: 'pkg1' } }),
+    /* a marketplace older than `source`: the line alone, which cannot be written, is printed */
+    '/api/cli/listing/old1': () => server(m.host, 'old1', { ready: false, local: true, delivery: 'local', start: 'npx -y old1', page: 'https://mcprush.com/mcp/pub/old1' }),
+    /* [14] a package with a variable it needs, as the marketplace sends it since 29 Sep 2026 */
+    '/api/cli/listing/brave': () => server(m.host, 'brave', {
+      ready: false, delivery: 'direct', page: page('brave'), start: 'npx -y @brave/brave-search-mcp-server',
+      source: { kind: 'npm', value: '@brave/brave-search-mcp-server', env: [{ key: 'BRAVE_API_KEY', required: true }, { key: 'LOG_LEVEL', required: false }] },
+      needs: ['BRAVE_API_KEY'],
+    }),
+    /* an image the marketplace still calls `direct` (runtime both), from one that sends neither
+       the line nor `needs`: both are read off the source, the server's arguments included */
+    '/api/cli/listing/grafana': () => server(m.host, 'grafana', {
+      ready: false, delivery: 'direct', page: page('grafana'),
+      source: { kind: 'image', value: 'docker.io/grafana/mcp-grafana:1.6.0', env: [{ key: 'GRAFANA_URL', required: true }], args: ['-t', 'stdio'] },
+    }),
+    '/api/cli/listing/duck': () => server(m.host, 'duck', {
+      ready: false, delivery: 'direct', page: page('duck'),
+      source: { kind: 'pypi', value: 'mcp-server-duckdb', args: ['--db-path', '<path to .duckdb>'] },
+    }),
+    /* a server behind the gateway, from a marketplace that answers it only with a key */
+    '/api/cli/listing/gw1': (req) => (req.auth ? server(m.host, 'gw1') : status(401, {
+      safe: true, error: 'This needs a key from your account.', how: 'Run `mcprush login`, or mint one at https://mcprush.com/dashboard#access',
+    })),
+    '/api/cli/listing/dead': () => status(401, { safe: true, error: 'That key is not live. It may have been revoked or expired.' }),
+    /* the marketplace of 29 Sep 2026 says which listing wants the key, and why */
+    '/api/cli/listing/gw2': (req) => (req.auth ? server(m.host, 'gw2') : status(401, {
+      safe: true, error: 'GW Two runs behind the mcprush gateway, so adding it needs a key from your account.',
+      how: 'Mint a key under Access at https://mcprush.com/dashboard#access, then run `npx mcprush@latest login` and paste it.',
+    })),
+    /* a package gone from its registry: the marketplace still builds a line, which is not printed */
+    '/api/cli/listing/gone1': () => server(m.host, 'gone1', {
+      ready: false, delivery: 'local', local: true, page: page('gone1'), start: 'npx -y jamgate',
+      source: { kind: 'npm', value: 'jamgate', noPackage: true },
+    }),
   }), async (m, home) => {
+    const cfg = () => JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers
+    /* I21/I05: a direct server is written the way `stack add` writes one — the entry its page
+       prints — rather than refused with its line; no install is recorded, no key is asked for */
     const r = await run(m.host, home, ['add', 'remote1'])
-    assert.equal(r.code, 1)
-    assert.match(r.err, /connected straight to its publisher/)
-    assert.match(r.err, /it starts with: https:\/\/mcp\.example\.com\/mcp/)
-    assert.match(r.err, /mcprush\.com\/mcp\/pub\/remote1/)
-    assert.ok(!/no verified endpoint/.test(r.err))
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /✓ Remote1 → Claude Code\n  entry added — it connects to: https:\/\/mcp\.example\.com\/mcp/)
+    assert.match(r.out, /not through the gateway: nothing was installed on the account, and no key is needed/)
+    assert.match(r.out, /mcprush\.com\/mcp\/pub\/remote1/)
+    assert.ok(!/no verified endpoint/.test(r.out + r.err))
+    assert.deepEqual(cfg().remote1, { type: 'http', url: 'https://mcp.example.com/mcp' })
     const l = await run(m.host, home, ['add', 'pkg1', '--json'])
-    assert.equal(l.code, 1)
-    assert.match(l.json().error, /runs on your own machine[\s\S]*it starts with: npx -y pkg1/)
-    assert.equal(installs(m).length, 0)
-    assert.ok(!existsSync(join(home, '.claude.json')))
+    assert.equal(l.code, 0, l.out)
+    assert.equal(l.json().id, 'pkg1')
+    assert.equal(l.json().start, 'npx -y pkg1')
+    assert.deepEqual(cfg().pkg1, { command: 'npx', args: ['-y', 'pkg1'] })
+    const old = await run(m.host, home, ['add', 'old1', '--json'])
+    assert.equal(old.code, 1)
+    assert.match(old.json().error, /runs on your own machine[\s\S]*set up the way its page shows\.\n  it starts with: npx -y old1/)
+    assert.ok(!Object.hasOwn(cfg(), 'old1'))
+
+    /* [13] the same without a key: none of them needs one, and none asks for one */
+    for (const id of ['remote1', 'brave', 'grafana', 'duck']) {
+      const k = await run(m.host, home, ['add', id], { noKey: true })
+      assert.equal(k.code, 0, `${id}: ${k.err}`)
+      assert.ok(!/No key held|needs a key/.test(k.out + k.err), `${id}: no key asked for`)
+      assert.equal(m.seen.filter((x) => x.url === '/api/cli/listing/' + id).at(-1).auth, null, `${id}: asked without a key`)
+    }
+
+    /* [14] the variable the line will not start without, after the line — in the entry as the placeholder */
+    const b = await run(m.host, home, ['add', 'brave'], { noKey: true })
+    assert.match(b.out, /entry added|entry replaced/)
+    assert.match(b.out, /it starts with: npx -y @brave\/brave-search-mcp-server\n/)
+    assert.match(b.out, /set BRAVE_API_KEY in \S+\.claude\.json: the entry holds <your value> until you do, and the server needs it to work/)
+    assert.deepEqual(cfg().brave, { command: 'npx', args: ['-y', '@brave/brave-search-mcp-server'], env: { BRAVE_API_KEY: '<your value>' } })
+    assert.ok(!/LOG_LEVEL\b(?! —)/.test(b.out.split('may need')[0]), 'an optional one is not called needed')
+    const bj = (await run(m.host, home, ['add', 'brave', '--json'], { noKey: true })).json()
+    assert.deepEqual(bj.needs, ['BRAVE_API_KEY'])
+    assert.equal(bj.start, 'npx -y @brave/brave-search-mcp-server')
+    assert.equal(bj.direct[0].written, true)
+
+    /* an image runs on the reader's machine, whatever the delivery says; its arguments go last */
+    const g = await run(m.host, home, ['add', 'grafana'], { noKey: true })
+    assert.match(g.out, /it starts with: docker run -i --rm -e GRAFANA_URL docker\.io\/grafana\/mcp-grafana:1\.6\.0 -t stdio\n/)
+    assert.match(g.out, /set GRAFANA_URL in /)
+    const d = await run(m.host, home, ['add', 'duck'], { noKey: true })
+    assert.match(d.out, /it starts with: uvx mcp-server-duckdb --db-path '<path to \.duckdb>'\n/)
+    assert.match(d.out, /put your own value in place of <path to \.duckdb> in \S+: the entry holds it as written until you do/)
+
+    /* a server behind the gateway still needs a key: an older marketplace's 401 is the old
+       sentence, naming a command that runs from npx and the address where a key is minted */
+    const gw = await run(m.host, home, ['add', 'gw1'], { noKey: true })
+    assert.equal(gw.code, 1)
+    assert.match(gw.err, /No key held yet\. Run `npx mcprush@latest login` and paste a key from your dashboard, or pipe one in: `printf %s "\$MCPRUSH_KEY" \| npx mcprush@latest login`/)
+    assert.ok(gw.err.includes(`${m.host}/dashboard#access`))
+    assert.ok(!/`mcprush login`/.test(gw.err), 'no bare `mcprush login`')
+    /* and a newer one's sentence, which names the listing, is kept, with the same ways in */
+    const gw2 = await run(m.host, home, ['add', 'gw2'], { noKey: true })
+    assert.equal(gw2.code, 1)
+    assert.match(gw2.err, /GW Two runs behind the mcprush gateway, so adding it needs a key from your account\. Run `npx mcprush@latest login` and paste a key/)
+    assert.ok(!/No key held yet/.test(gw2.err))
+    assert.ok(gw2.err.includes(`${m.host}/dashboard#access`))
+    /* a package gone from its registry: refused with the reason, and nothing written */
+    const gone = await run(m.host, home, ['add', 'gone1'], { noKey: true })
+    assert.equal(gone.code, 1)
+    assert.match(gone.err, /there is no line to start it: its package is not on its registry any more/)
+    assert.ok(!/it starts with/.test(gone.err), gone.err)
+    assert.ok(!Object.hasOwn(cfg(), 'gone1'))
+    assert.equal(installs(m).length, 0, 'no direct server was installed on the account')
+
+    /* a dead key: the marketplace's sentence, and where a new one comes from */
+    const dead = await run(m.host, home, ['add', 'dead'])
+    assert.equal(dead.code, 1)
+    assert.match(dead.err, /That key is not live/)
+    assert.ok(dead.err.includes(`Mint a key at ${m.host}/dashboard#access, then: printf %s "$MCPRUSH_KEY" | npx mcprush@latest login`), dead.err)
+
+    /* and with a key the gateway one installs, as before */
+    const ok = await run(m.host, home, ['add', 'gw1'])
+    assert.equal(ok.code, 0, ok.err)
+    assert.equal(installs(m).length, 1)
   })
 })
 
 test('K37: whoami says when the key expires and which seat it carries, and an older marketplace gets the old two lines', async () => {
-  const soon = new Date(Date.now() + 10 * 86_400_000 - 60_000).toISOString()
+  const soon = new Date(Date.now() + 10 * 86_400_000 + 60_000).toISOString()
   await withMarket((m) => routes(m.host, {
     '/api/cli/whoami': () => ({ email: 'me@example.com', plan: 'Free', key: { label: 'k', scope: 'read', expires: soon, role: 'Member' }, installs: 0, calls30: 0 }),
   }), async (m, home) => {
@@ -780,6 +952,35 @@ test('K37: whoami says when the key expires and which seat it carries, and an ol
     assert.match(r.out, new RegExp(`expires ${soon.slice(0, 10)} — in 10 days; mint a new one at `))
     assert.match(r.out, /minted from a Member seat/)
   })
+  /* [13] under a day is hours, under an hour minutes: 45 minutes read "in 1 day" */
+  for (const [left, want] of [
+    [5 * 3_600_000 + 30 * 60_000, / UTC — in 5 hours; mint a new one at /],
+    [3_600_000 + 60_000, / UTC — in 1 hour; mint a new one at /],
+    [45 * 60_000, / UTC — in 4[45] minutes; mint a new one at /],
+    /* 59 minutes and a half is an hour, not "in 60 minutes" */
+    [59 * 60_000 + 50_000, / UTC — in 1 hour; mint a new one at /],
+  ]) {
+    const at = new Date(Date.now() + left).toISOString()
+    await withMarket((m) => routes(m.host, {
+      '/api/cli/whoami': () => ({ email: 'me@example.com', plan: 'Free', key: { label: 'k', scope: 'read', expires: at, role: 'Owner' }, installs: 0, calls30: 0 }),
+    }), async (m, home) => {
+      const r = await run(m.host, home, ['whoami'])
+      assert.equal(r.code, 0, r.err)
+      assert.match(r.out, want)
+      assert.ok(r.out.includes(`expires ${at.slice(0, 16).replace('T', ' ')} UTC`), r.out)
+      assert.ok(!/in 1 day/.test(r.out))
+    })
+  }
+  /* a day and an hour is "in 1 day": rounded up it read "in 2 days" beside tomorrow's date */
+  {
+    const at = new Date(Date.now() + 25 * 3_600_000).toISOString()
+    await withMarket((m) => routes(m.host, {
+      '/api/cli/whoami': () => ({ email: 'me@example.com', plan: 'Free', key: { label: 'k', scope: 'read', expires: at, role: 'Owner' }, installs: 0, calls30: 0 }),
+    }), async (m, home) => {
+      const r = await run(m.host, home, ['whoami'])
+      assert.match(r.out, new RegExp(`expires ${at.slice(0, 10)} — in 1 day; mint a new one at `))
+    })
+  }
   await withMarket((m) => routes(m.host, {
     '/api/cli/whoami': () => ({ email: 'me@example.com', plan: 'Free', key: { label: 'k', scope: 'read', expires: null, role: 'Owner' }, installs: 0, calls30: 0 }),
   }), async (m, home) => {

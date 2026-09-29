@@ -13,13 +13,13 @@ import { join, dirname, relative, sep } from 'node:path'
 import {
   readConfig, writeConfig, host, key, CONFIG_FILE, DEFAULT_HOST,
   CLIENTS, clientOf, canonicalClient, KNOWN_CLIENTS, entryFor, readClientFile, updateClientFile,
-  atPath, skillDirFor, ensureInputs, checkInputs, dropUnusedInput, insideDir, realInside, scrubLiteralKey, checkedUrl,
+  atPath, skillDirFor, ensureInputs, checkInputs, dropUnusedInput, insideDir, realInside, scrubLiteralKey, checkedUrl, safeFolder,
   safeEntryKey, ownEntry, checkWritable, directStart, directEntryFor, directEntryOurs, legacyEntriesFor, entryLine, sameLaunch,
-  ENV_PLACEHOLDER, BRIDGE_SPEC,
+  ENV_PLACEHOLDER, BRIDGE_SPEC, shq, sourceEnv, sourceGone, lacksOf, startLineOf,
   printable, workspaceNote, legacyNote, NO_SKILL_FOLDER, LIVE_SKILLS, heldKey, putKey, targetsOf, FILED_AS,
 } from '../lib/config.js'
-import { api, skillFile, skillBundle, Refused, parseRef } from '../lib/api.js'
-import { setupFor } from '../lib/byhand.js'
+import { api, skillFile, skillBundle, skillZip, Refused, parseRef } from '../lib/api.js'
+import { setupFor, directSetupFor, onWindows, WINDOWS_POLICY, blockedByPolicy } from '../lib/byhand.js'
 import { untarGz } from '../lib/tar.js'
 import { parse, boolFlag, unknownFlags } from '../lib/args.js'
 
@@ -40,30 +40,62 @@ const say = (...a) => console.log(...a)
 const safe = (t) => printable(t)
 const said = (t) => printable(t, 4000)
 
+/* THE DESCRIPTIONS START AT ONE COLUMN, WORKED OUT RATHER THAN TYPED. The spaces were typed by
+   hand, and 0.2.1 printed the descriptions at four different columns, 32 to 35. The pad is
+   counted on the text as typed: on a terminal bold() and dim() wrap it in escape codes, which
+   take no column on screen but do count in `.length`. A row is [what is painted, what is not,
+   the description, and any further lines of it]. */
+const helpRows = (rows, paint, gap) => {
+  const raw = ([a, b]) => (b ? `${a} ${b}` : a)
+  const width = Math.max(...rows.map((r) => raw(r).length)) + gap
+  return rows.flatMap((r) => {
+    const [a, b, text, ...more] = r
+    return [
+      `  ${paint(a)}${b ? ' ' + b : ''}${' '.repeat(width - raw(r).length)}${text}`,
+      ...more.map((line) => `  ${' '.repeat(width)}${line}`),
+    ]
+  }).join('\n')
+}
+
+/* THE COMMAND A HINT NAMES IS ONE THAT RUNS WHERE THE PERSON IS. Every hint said `mcprush login`,
+   `mcprush remove x`, `mcprush skill add x` — and a person who started this tool the way the site
+   and the README show it, through npx, has no `mcprush` on the PATH: zsh answers "command not
+   found: mcprush", exit 127 (test of every printed command, 29 Sep 2026). `npx mcprush@latest …`
+   runs for them and for anybody who installed it globally alike. */
+const NPX = 'npx mcprush@latest'
+
+/* THE HELP SAYS HOW ITS OWN COMMANDS ARE RUN. It listed every command as a bare `mcprush <command>`,
+   which is "command not found" to everybody who reached it through npx, as the site shows it —
+   so the line under the title says both ways (test of 29 Sep 2026). */
 const HELP = `${bold('mcprush')} ${dim(VERSION)} — install MCP servers from mcprush.com
+  run each as ${NPX} <command> (or npm i -g mcprush, then mcprush <command>)
 
-  ${bold('mcprush login')}                 hold a key from your dashboard (asked for, or piped in)
-  ${bold('mcprush relink')}                put the key held now into every entry this tool wrote
-  ${bold('mcprush logout')}                forget the key, and say which entries still carry it
-  ${bold('mcprush add')} <server>…        install one or more, into a client
-  ${bold('mcprush remove')} <server>       take it out again
-  ${bold('mcprush skill add')} <skill>      write a skill's folder to disk
-  ${bold('mcprush skill remove')} <skill>   delete that folder again
-  ${bold('mcprush stack add')} <stack>      install a curated set — gateway members and the ones you run yourself
-  ${bold('mcprush add-list')} <list>         install one of your saved lists
-  ${bold('mcprush budget')} [--max --alert]  the account's monthly ceiling, checked when a subscription is bought
-  ${bold('mcprush list')}                  what this account has installed
-  ${bold('mcprush whoami')}                which account this key belongs to
-  ${bold('mcprush clients')}               which clients can be written to here
+${helpRows([
+    ['mcprush login', '', 'hold a key from your dashboard (asked for, or piped in)'],
+    ['mcprush relink', '', 'put the key held now into every entry this tool wrote'],
+    ['mcprush logout', '', 'forget the key, and say which entries still carry it'],
+    ['mcprush add', '<server>…', 'install one or more, into a client'],
+    ['mcprush remove', '<server>', 'take it out again'],
+    ['mcprush skill add', '<skill>', "write a skill's folder to disk"],
+    ['mcprush skill remove', '<skill>', 'delete that folder again'],
+    ['mcprush stack add', '<stack>', 'install a curated set — gateway members and the ones you run yourself'],
+    ['mcprush add-list', '<list>', 'install one of your saved lists'],
+    ['mcprush budget', '[--max --alert]', "the account's monthly ceiling, checked when a subscription is bought"],
+    ['mcprush list', '', 'what this account has installed'],
+    ['mcprush whoami', '', 'which account this key belongs to'],
+    ['mcprush clients', '', 'which clients can be written to here'],
+  ], bold, 2)}
 
-  ${dim('--client <id>')}   which client to write (default: claude-code)
-  ${dim('--global')}        for skills: your home folder rather than this project
-  ${dim('--host <url>')}    a different marketplace (default: mcprush.com)
-  ${dim('--key <key>')}     login: the key itself — visible in ps and history, so pipe it in instead
-  ${dim('--json')}          machine-readable output
-  ${dim('--dry-run')}       say what would be written, write nothing (stack add refuses one)
-  ${dim('--force')}         add, stack add, add-list: replace an entry this tool did not write · remove: take one out
-                  skill add: replace a folder you changed, or another publisher's · skill remove: delete it whole
+${helpRows([
+    ['--client <id>', '', 'which client to write (default: claude-code)'],
+    ['--global', '', 'for skills: your home folder rather than this project'],
+    ['--host <url>', '', 'a different marketplace (default: mcprush.com)'],
+    ['--key <key>', '', 'login: the key itself — visible in ps and history, so pipe it in instead'],
+    ['--json', '', 'machine-readable output'],
+    ['--dry-run', '', 'say what would be written, write nothing (stack add refuses one)'],
+    ['--force', '', 'add, stack add, add-list: replace an entry this tool did not write · remove: take one out',
+      "skill add: replace a folder you changed, or another publisher's · skill remove: delete it whole"],
+  ], dim, 3)}
 
   ${dim('A paid listing is bought in the browser: this tool never takes a card.')}
 `
@@ -210,6 +242,9 @@ function writeEntries(client, put, onAccount) {
         put(atPath(fresh, t.at), t, !wrote.length)
         swapped += scrubLiteralKey(t, fresh, key())
         ensureInputs(t, fresh)
+        /* VS Code's key prompt only where an entry asks for it: a server the client starts itself,
+           written by `add` or `stack add` alone, names no key */
+        dropUnusedInput(t, fresh)
       })
       wrote.push(done.file)
       notes.push(...(done.notes || []))
@@ -223,7 +258,7 @@ function writeEntries(client, put, onAccount) {
         ? ` ${wrote.join(' and ')} ${wrote.length === 1 ? 'was' : 'were'} written; copy the entry into ${t.file} by hand.`
         : ids.length
           ? ` The install${ids.length === 1 ? ' is' : 's are'} already on your account: `
-            + ids.map((i) => `\`mcprush remove ${i}\``).join(', ') + ' take' + (ids.length === 1 ? 's it' : ' them')
+            + ids.map((i) => `\`${NPX} remove ${i}\``).join(', ') + ' take' + (ids.length === 1 ? 's it' : ' them')
             + ' off, or your dashboard does.'
           : ''
       throw new Refused(sentence + undo, { installed: ids, ...(wrote.length ? { wrote } : {}), ...extrasOf(err) })
@@ -330,8 +365,9 @@ async function login() {
   if (!given) {
     throw new Refused(
       (quiet ? `No key given: nothing arrived on stdin in ${STDIN_WAIT_MS / 1000} seconds, and there is no terminal to ask on. ` : 'No key given. ')
-      + 'Pipe it in — `printf %s "$MCPRUSH_KEY" | mcprush login` — or run `mcprush login` in a '
-      + 'terminal to be asked for it; for a single run, MCPRUSH_KEY needs no login at all.')
+      + `Pipe it in — \`printf %s "$MCPRUSH_KEY" | ${NPX} login\` — or run \`${NPX} login\` in a `
+      + 'terminal to be asked for it; for a single run, MCPRUSH_KEY needs no login at all.',
+      { how: host() + '/dashboard#access' })
   }
   /* on stderr, and not under --json: the JSON is the whole of what a script reads */
   if (onArgv && !JSONOUT) {
@@ -384,7 +420,7 @@ async function login() {
     }
     if (stale) {
       say(dim(`  ${stale} entr${stale === 1 ? 'y' : 'ies'} this tool wrote carr${stale === 1 ? 'ies' : 'y'} another key — `
-        + '`mcprush relink` puts this one in them'))
+        + `\`${NPX} relink\` puts this one in them`))
     }
     if (me.suspended) say(red('  this account is suspended — installs and calls are closed'))
   })
@@ -409,8 +445,21 @@ async function whoami() {
     const exp = typeof me.key.expires === 'string' ? new Date(me.key.expires) : null
     const bits = []
     if (exp && !Number.isNaN(exp.getTime())) {
-      const days = Math.ceil((exp.getTime() - Date.now()) / 86_400_000)
-      bits.push(`expires ${exp.toISOString().slice(0, 10)}${days <= 30 ? ` — in ${Math.max(days, 0)} day${days === 1 ? '' : 's'}; mint a new one at ${host()}/dashboard#access` : ''}`)
+      /* UNDER A DAY IS COUNTED IN HOURS. Days were rounded up, so a key with 45 minutes left read
+         "in 1 day" — and every entry written with it stops a day earlier than that says. Under a
+         day the hour and the time of day are given, under an hour the minutes. Whole days are
+         counted down too: rounded up, a key with 25 hours left read "expires <tomorrow> — in 2
+         days". Minutes are counted first, so 59 minutes and 30 seconds is "in 1 hour", not "in
+         60 minutes". */
+      const left = exp.getTime() - Date.now()
+      const days = Math.floor(left / 86_400_000)
+      const minutes = Math.max(Math.ceil(left / 60_000), 0)
+      const hours = Math.floor(minutes / 60)
+      const when = left >= 86_400_000
+        ? `in ${days} day${days === 1 ? '' : 's'}`
+        : hours >= 1 ? `in ${hours} hour${hours === 1 ? '' : 's'}` : `in ${minutes} minute${minutes === 1 ? '' : 's'}`
+      const on = left < 86_400_000 ? exp.toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : exp.toISOString().slice(0, 10)
+      bits.push(`expires ${on}${days <= 30 ? ` — ${when}; mint a new one at ${host()}/dashboard#access` : ''}`)
     } else if (me.key.expires === null) bits.push('does not expire')
     if (typeof me.key.role === 'string' && me.key.role) bits.push(`minted from ${/^[aeiou]/i.test(me.key.role) ? 'an' : 'a'} ${safe(me.key.role)} seat`)
     if (bits.length) say(dim(`  ${bits.join(' · ')}`))
@@ -511,7 +560,7 @@ async function relink() {
   const me = await api.whoami()
   if (!me || typeof me.email !== 'string' || !me.key) {
     throw new Refused(`${host()} answered without an account on it, so the key was not written anywhere. `
-      + 'Log in with a live key first: `mcprush login`.')
+      + `Log in with a live key first: \`${NPX} login\`.`, { how: host() + '/dashboard#access' })
   }
   const { found, unreadable } = keyedEntries(ids)
   const stale = perClient(found.filter((f) => f.token !== token))
@@ -589,8 +638,220 @@ async function clients() {
       for (const t of targetsOf(CLIENTS[id])) say(dim(`    ${t.file}`))
     }
     say(dim('\n  ✓ = this tool can write its config here. The rest are set up by hand:'))
-    say(dim('    `mcprush add <server> --client <id>` prints that client\'s own command or snippet.'))
+    say(dim(`    \`${NPX} add <server> --client <id>\` prints that client's own command or snippet.`))
   })
+}
+
+/* ---- a server the client starts itself, for `add` and `stack add` alike -------------------- */
+
+/* A NAME COPIED WITH THE SENTENCE AROUND IT. The stack page printed `npx mcprush@latest stack add
+   pr-desk` with a colon after it, and the colon, copied with the command, made "There is no stack
+   called pr-desk:" (test of 29 Sep 2026). No listing, stack or skill name ends in punctuation, so a
+   trailing `:` `;` `,` or `.` belongs to the sentence and is dropped. */
+/* only after a letter or a digit: `..` and `pub/..` stay what they are, and are refused as names */
+const tidyName = (n) => { const m = /^(.*[A-Za-z0-9])[:;,.]+$/.exec(String(n)); return m ? m[1] : String(n) }
+
+/* THE PRICE, AS THE PAGE SAYS IT. A paid listing was refused with "a paid listing … a browser
+   flow" and the checkout, and the price was nowhere, though the page promised the install would
+   stop with it (test of 29 Sep 2026). A server is sold by plan, each with its own monthly price,
+   and the listing's own amount is 0 then; a skill is sold once, for its amount. '' when the answer
+   carries neither, and a marketplace's own `price` sentence stands in for them. */
+function priceSay(x) {
+  if (!x || typeof x !== 'object') return ''
+  const money = (c) => '$' + (c / 100).toFixed(c % 100 ? 2 : 0)
+  const plans = (Array.isArray(x.plans) ? x.plans : []).map((p) => Number(p && p.cents)).filter((c) => Number.isFinite(c) && c > 0)
+  const own = Number(x.amountCents)
+  const cents = plans.length ? Math.min(...plans) : Number.isFinite(own) && own > 0 ? own : 0
+  if (!cents) return typeof x.price === 'string' && x.price.trim() ? safe(x.price.trim()).slice(0, 60) : ''
+  const from = new Set(plans).size > 1
+  return `${from ? 'from ' : ''}${money(cents)}${x.priceType === 'sub' ? ' a month' : ''}`
+}
+
+/* a paid listing, not bought: its price and its checkout, and the login where no key is held */
+function paidRefusal(listing) {
+  const price = priceSay(listing)
+  return new Refused(
+    `${listing.name} is a paid listing${price ? ` (${price})` : ''}. Buy it at the checkout link below — a card and `
+    + `an invoice are a browser flow — then run this command again${key() ? '' : `, after \`${NPX} login\``}.`,
+    { checkout: listing.checkout, ...(price ? { price } : {}) })
+}
+
+/* ONE DIRECT SERVER, SETTLED BEFORE ANYTHING IS WRITTEN: the entry built, or the reason it is not.
+   `stack add` settled its direct members here, and `add` refused every direct server with its
+   start line — "runs on your own machine … set up the way its page shows" — so the one command
+   the home page shows for every client, `npx mcprush@latest add <server>`, worked for the few
+   hundred servers behind the gateway and for none of the rest of the catalogue (test of 29 Sep
+   2026). Both commands write the same entry now. `item` is `{ id, name, source, start, page }`;
+   `bucket` is the client file's section as the pre-flight read it, null for a client set up by
+   hand, which gets that client's own form of the entry instead (lib/byhand.js). */
+function settleDirect(item, needs, client, clientId, bucket) {
+  /* the member's required names, as the marketplace lists them (`needs`), beside source.env */
+  const started = directStart(item.source, needs)
+  if (started.why) return { ...item, written: false, why: started.why }
+  /* The same check the gateway members get, with a different outcome: a member named
+     `__proto__` or `a/b` is not written, is said so, and does not stop the others. */
+  const k = safeEntryKey(item.id)
+  if (!k) return { ...item, written: false, why: 'named in a way this tool will not write into a config' }
+  /* WHAT IS PRINTED IS WHAT IS WRITTEN. The marketplace's own line was printed while the
+     entry was built here, so an image with variables printed `-e DATABASE_URL` and wrote
+     none. The line comes from the entry; the marketplace's is shown beside it only when
+     the two disagree, marked as such — quoted for a shell or not, the same line is the same.
+     A server that serves HTTP has the line it is started with and an address, and the
+     marketplace's line for it is one of the two, so it is not compared. */
+  const norm = (u) => { try { return new URL(u).toString() } catch { return String(u) } }
+  const words = started.command ? [started.command, ...started.args] : null
+  /* an address with the publisher's marks is written as sent, not normalised (directStart) */
+  const differs = !!item.start && !started.local && (started.url
+    ? item.start !== started.url && norm(item.start) !== started.url
+    : item.start !== words.map(shq).join(' ') && item.start !== words.join(' '))
+  const need = Array.isArray(started.need) ? started.need : []
+  const may = Array.isArray(started.may) ? started.may : []
+  const launcher = Array.isArray(started.launcher) ? started.launcher : []
+  const fill = Array.isArray(started.fill) ? started.fill : []
+  const told = {
+    /* a server started by hand reads its variables from that terminal, not from the entry */
+    ...(need.length ? (started.local ? { serveNeeds: need } : { needs: need }) : {}),
+    ...(may.length ? { mayNeed: may } : {}), ...(launcher.length ? { launcherEnv: launcher } : {}),
+    ...(fill.length ? { fill } : {}), ...(differs ? { differs: true } : {}),
+    ...(started.runFirst ? { runFirst: started.runFirst } : {}),
+    ...(started.local ? { local: true, address: started.url, serve: startLineOf(started) } : {}),
+  }
+  /* a client this tool does not write: the member in that client's own form, to paste */
+  if (!client) {
+    return { ...item, key: k, started, ...told, written: false, why: `${clientId} is set up by hand`, setup: directSetupFor(clientId, k, started) }
+  }
+  const entry = directEntryFor(client.shape, started)
+  const base = { ...item, key: k, line: entryLine(entry), started, ...told }
+  /* A direct entry is ours to replace only when it is the one this run would write, one an
+     earlier version wrote for the same member (directEntryOurs), or a gateway entry of ours. One
+     that starts the same thing with the person's values in its env is theirs, filled in, and
+     kept — and still told what it lacks; anything else under the name is refused. */
+  if (bucket && !FORCE && Object.hasOwn(bucket, k)) {
+    const there = bucket[k]
+    if (!ownEntry(there) && !directEntryOurs(client.shape, started, there)) {
+      if ([entry, ...legacyEntriesFor(client.shape, started)].some((e) => sameLaunch(there, e))) {
+        const theirs = there.env && typeof there.env === 'object' && !Array.isArray(there.env) ? there.env : {}
+        const unset = (v) => typeof theirs[v] !== 'string' || !theirs[v] || theirs[v] === ENV_PLACEHOLDER
+        const { needs: _n, mayNeed: _m, ...rest } = base
+        const stillNeeds = started.local ? [] : need.filter(unset)
+        const stillMay = may.filter((v) => !Object.hasOwn(theirs, v))
+        /* their copy of what an earlier version wrote, without something the server needs: kept, and told */
+        const lacks = lacksOf(client.shape, started, there)
+        return {
+          ...rest, ...(stillNeeds.length ? { needs: stillNeeds } : {}), ...(stillMay.length ? { mayNeed: stillMay } : {}),
+          ...(lacks && lacks.withArgs ? { missingWith: lacks.withArgs } : {}),
+          ...(lacks && lacks.runArgs ? { missingArgs: lacks.runArgs } : {}),
+          ...(lacks && lacks.stdio ? { overStdio: true } : {}),
+          written: false, kept: true,
+          why: Object.keys(theirs).length
+            ? 'already in the file, with values of yours — left as it is'
+            : 'already in the file — left as it is',
+        }
+      }
+      return { ...base, written: false, conflict: true, why: 'an entry you wrote is under this name — left alone; --force replaces it' }
+    }
+  }
+  return { ...base, written: true, entry }
+}
+
+/* What a direct entry asks of the person, under its line: the step before its first start, the
+   terminal a server that serves HTTP runs in, the variables, the placeholders. `file` is the
+   config it went into, or null for a client set up by hand, whose own form already names them. */
+function directLines(d, file, pad) {
+  const list = (xs) => xs.map(safe).join(', ')
+  const it = (xs) => (xs.length === 1 ? 'it' : 'them')
+  if (d.runFirst) say(`${pad}run once first: ${said(d.runFirst)}`)
+  if (d.local) {
+    say(`${pad}it serves HTTP at ${safe(d.address)}, and your client connects to it there: start it yourself first, in a `
+      + 'terminal of its own, and leave it running:')
+    say(`${pad}  ${said(d.serve)}`)
+    if (d.serveNeeds) {
+      say(`${pad}it reads ${list(d.serveNeeds)} from that terminal: set ${it(d.serveNeeds)} there first`
+        + (onWindows() ? ` ($env:${safe(d.serveNeeds[0])} = '…' in PowerShell)` : ''))
+    }
+    if (d.fill) say(`${pad}put your own value in place of ${list(d.fill)} in that line first`)
+  }
+  /* the line run by hand in a terminal is an npm wrapper as often as not: on Windows, the policy sentence */
+  policyOnce([d.runFirst, d.local ? d.serve : null], pad)
+  if (!file) return
+  if (d.needs) {
+    say(`${pad}set ${list(d.needs)} in ${file}: `
+      + `${d.kept ? `your entry does not have ${it(d.needs)} yet` : `the entry holds ${ENV_PLACEHOLDER} until you do`}, and the server needs ${it(d.needs)} to work`)
+  }
+  if (d.missingWith) {
+    /* their own entry, as an earlier version wrote it: without the launcher's options */
+    say(`${pad}your entry starts it without ${d.missingWith.map(shq).map(safe).join(' ')}, which it needs to start: `
+      + `add ${it(d.missingWith)} before the package in its args in ${file}`)
+  }
+  if (d.missingArgs) {
+    /* their own entry, as 0.2.1 wrote it: started without the word the server needs */
+    say(`${pad}your entry starts it without ${d.missingArgs.map(shq).map(safe).join(' ')}, which the server needs: `
+      + `add ${it(d.missingArgs)} at the end of its args in ${file}`)
+  }
+  if (d.overStdio) {
+    say(`${pad}your entry starts it over stdio, and it serves HTTP: start it yourself as above and point the entry at `
+      + `${safe(d.address)} in ${file} instead — or pass --force to have it replaced (the old one is kept in the .bak)`)
+  }
+  if (d.fill && !d.kept && !d.local) {
+    say(`${pad}put your own value in place of ${list(d.fill)} in ${file}: the entry holds ${it(d.fill)} as written until you do`)
+  }
+  if (d.mayNeed) {
+    /* "not marked as required" is true of a bare name and of { required: false } alike —
+       the form the marketplace sends since the audit — where "does not say" was not */
+    say(dim(`${pad}may need ${list(d.mayNeed)} — ${d.mayNeed.length === 1 ? 'not marked as required, so it is not' : 'none is marked as required, so none is'} `
+      + `in the entry; add any the server asks for under env in ${file}`))
+  }
+  if (d.launcherEnv) {
+    say(dim(`${pad}declares ${list(d.launcherEnv)}, which steer${d.launcherEnv.length === 1 ? 's' : ''} the launcher or the process `
+      + `itself — not written; set ${it(d.launcherEnv)} only if you know why`))
+  }
+}
+
+/* One client's own form of an entry, to paste: its lines, the PowerShell line beside them on
+   Windows (never in their place), and what it does. The execution-policy sentence is said once a
+   command, beside the first line that starts an npm wrapper. */
+let policySaid = false
+function printForm(form, codePad, howPad) {
+  for (const line of String(form.code || '').split('\n')) say(`${codePad}${said(line)}`)
+  if (form.powershell && onWindows()) {
+    say(dim(`${howPad}in PowerShell:`))
+    say(`${codePad}${said(form.powershell)}`)
+  }
+  if (form.how) say(dim(`${howPad}${said(form.how)}`))
+  policyOnce([form.code, form.powershell], howPad)
+}
+function policyOnce(lines, pad) {
+  if (!policySaid && onWindows() && lines.some(blockedByPolicy)) {
+    policySaid = true
+    say(dim(`${pad}${WINDOWS_POLICY}`))
+  }
+}
+
+/* what `--json` carries of a settled direct server: not the entry key (the id, checked) nor the start */
+const directOut = ({ key: _k, started: _s, ...d }) => d
+
+/* A DIRECT SERVER THAT CANNOT BE WRITTEN IS REFUSED WITH ITS REASON AND ITS PAGE: gone from its
+   registry, a tool around servers rather than one, a name this tool will not put into a command. */
+function directRefused(listing, src, d) {
+  const runsHere = !!listing.local || listing.delivery === 'local'
+    || (!!src && ['npm', 'pypi', 'image'].includes(String(src.kind)))
+  return new Refused(
+    (runsHere && src && src.kind === 'url'
+      /* an address the marketplace calls the reader's own is on their machine or network, or a
+         placeholder for their own deployment (https://YOUR_WORKER_URL/mcp) — the page says
+         "your own deployment", not "your own machine", of the second */
+      ? `${listing.name} answers at an address you run yourself — your own deployment of it, or your own `
+        + 'machine — rather than behind the gateway, so there is nothing to install on the account.'
+      : runsHere
+        ? `${listing.name} runs on your own machine rather than behind the gateway, so there is nothing to install `
+          + 'on the account.'
+        : `${listing.name} is connected straight to its publisher rather than through the gateway, so there is `
+          + 'nothing to install on the account.')
+    /* a marketplace older than `source` sends only the line: printed, to be set up the way the page shows */
+    + (d.start && !src ? ' Your client starts it itself, set up the way its page shows.' : '')
+    + (d.start ? `\n  it starts with: ${d.start}${src ? `\n  it was not written: ${d.why}` : ''}` : `\n  there is no line to start it: ${d.why}`)
+    + (d.page ? `\n  ${d.page}` : ''),
+    { ...(d.start ? { start: d.start } : {}) })
 }
 
 /* `mcprush add` takes a list of names, because that is what a purchase receipt prints. A
@@ -602,9 +863,10 @@ async function add() {
   /* A name given twice is one name: `add gitlab gitlab` made two installs and printed "entry
      added" and then "entry replaced" over the entry it had just added. Two spellings of one
      listing (key and `<publisher>/<slug>`) are folded below, once the marketplace has named it. */
-  const names = [...new Set(args._.slice(1).filter((n) => typeof n === 'string' && n.length))]
-  if (!names.length) throw new Refused('Which server? `mcprush add <server>`')
-  requireKey()
+  const names = [...new Set(args._.slice(1).filter((n) => typeof n === 'string' && n.length).map(tidyName).filter(Boolean))]
+  if (!names.length) throw new Refused(`Which server? \`${NPX} add <server>\``)
+  /* the key is asked for below, before the first install: a skill, a direct server, a paid one
+     are each named without one (keyless) */
   const clientId = await resolveClient()
   const single = names.length === 1
   /* --plan is parsed so a copied command does not fall over, but a tier is chosen at checkout. */
@@ -636,17 +898,19 @@ async function add() {
   const filed = await filedAs(clientId)
 
   const done = []
+  /* the servers the client starts itself, or dials at their publisher's address (settleDirect) */
+  const direct = []
   const failed = []
   const resolved = new Set()
 
   for (const name of names) {
     try {
       /* Both forms of the name resolve: the card prints the key, the page `<publisher>/<slug>`. */
-      const listing = await api.listingRef(name)
+      const listing = await keyless(() => api.listingRef(name))
       if (listing.kind === 'skill') {
         throw new Refused(
           `${listing.name} is an agent skill, not a server: it is a folder of instructions your client reads, `
-          + `and there is nothing to route. Write it to disk with \`mcprush skill add ${name}\`.`
+          + `and there is nothing to route. Write it to disk with \`${NPX} skill add ${name}\`.`
           + `\n  ${listing.page}`)
       }
       /* NOT BEHIND THE GATEWAY IS NOT "NOT READY YET". A server connected straight to its
@@ -654,26 +918,34 @@ async function add() {
          behind it yet" — it never will have: it is at the publisher's own address. The
          marketplace names the delivery and the line that starts it (`delivery`, `start`);
          an older one sends neither, and then only `local` is known, as before. */
-      if (listing.local || listing.delivery === 'direct' || listing.delivery === 'local') {
-        const local = listing.local || listing.delivery === 'local'
-        const start = typeof listing.start === 'string' && listing.start ? listing.start : null
-        throw new Refused(
-          (local
-            ? `${listing.name} runs on your own machine rather than behind the gateway, so its install is its own `
-              + 'instructions rather than a config entry from us.'
-            : `${listing.name} is connected straight to its publisher rather than through the gateway, so there is `
-              + 'nothing to install on the account.')
-          + (start ? `\n  it starts with: ${start}` : '')
-          + `\n  ${listing.page}`)
+      /* A PACKAGE OR AN IMAGE RUNS ON THE READER'S MACHINE, WHATEVER THE DELIVERY SAYS. The
+         marketplace called a direct listing with a docker image and runtime `both` (github-mcp,
+         grafana-mcp) `direct`, and this said "connected straight to its publisher… nothing to
+         install" of an image the reader pulls and runs. The source's kind decides it here too. */
+      const src = listing.source && typeof listing.source === 'object' ? listing.source : null
+      const runsHere = !!listing.local || listing.delivery === 'local'
+        || (!!src && ['npm', 'pypi', 'image'].includes(String(src.kind)))
+      if (runsHere || listing.delivery === 'direct') {
+        /* a paid one is bought first, as `stack add` skips a paid direct member ("buy it in the browser") */
+        if (listing.free === false && !listing.installed) throw paidRefusal(listing)
+        /* written the way `stack add` writes a direct member: no install on the account, no key */
+        const d = settleDirect({
+          id: String(listing.id ?? ''), name: String(listing.name ?? listing.id ?? ''), source: src,
+          /* a package gone from its registry has no line, whatever line the marketplace built for it */
+          start: typeof listing.start === 'string' && listing.start && !(src && sourceGone(src)) ? listing.start : null,
+          page: typeof listing.page === 'string' && listing.page ? listing.page : null,
+        }, listing.needs, client, clientId, bucket)
+        if (d.key && resolved.has(d.key)) continue
+        if (d.conflict) throw new Refused(foreign(client, d.key, 'Nothing was written for it.'))
+        if (!d.written && !d.kept && !d.setup) throw directRefused(listing, src, d)
+        resolved.add(d.key)
+        direct.push(d)
+        continue
       }
       if (listing.status !== 'live') {
         throw new Refused(`${listing.name} is ${listing.status} and cannot be installed.`)
       }
-      if (!listing.free && !listing.installed) {
-        throw new Refused(
-          `${listing.name} is a paid listing. Buying it needs a card and an invoice, which is a browser flow.`,
-          { checkout: listing.checkout })
-      }
+      if (!listing.free && !listing.installed) throw paidRefusal(listing)
       if (!listing.ready) {
         throw new Refused(`${listing.name} has no verified endpoint behind it yet, so there is nothing to route to.`)
       }
@@ -702,9 +974,13 @@ async function add() {
       const held = FORCE ? null : theirsIn(files, entryKey)
       if (held) throw new Refused(foreign(held.t, entryKey, 'Nothing was installed.'))
 
-      /* the install first: the gateway refuses calls from an account without one */
+      /* the install first: the gateway refuses calls from an account without one — and this is
+         the first step that writes to the account, so the key is asked for here */
       let installed = { unchanged: true, url: listing.url }
-      if (!DRY) installed = await api.install(listing.id, filed)
+      if (!DRY) {
+        requireKey()
+        installed = await api.install(listing.id, filed)
+      }
       /* The install answer's address is checked like the listing's was, and the checked listing
          address stands in for one that fails: this is after the install is recorded, so a
          refusal here would be one over an install that stands — and the by-hand branch below
@@ -727,20 +1003,32 @@ async function add() {
     }
   }
 
+  /* a direct server for a client set up by hand: nothing was written, so no tick (as `stack add`) */
+  const handDirect = (d, pad) => {
+    say(`${bold(safe(d.name) || safe(d.key))} — nothing was written: ${safe(clientId)} is set up by hand, so paste this into it yourself`)
+    if (d.setup && d.setup.code) printForm(d.setup, pad + '  ', pad)
+    else if (d.setup) say(dim(`${pad}${said(d.setup.how)}`))
+    directLines(d, null, pad)
+    if (d.page) say(dim(`${pad}${safe(d.page)}`))
+  }
+  const handWhy = `${clientId} is set up by hand, so nothing was written: paste it into ${clientId} yourself`
+
   /* Before the "client we do not write" branch, which knows nothing of DRY and would install. */
   if (!client && DRY) {
-    emit({ ok: !failed.length, dryRun: true, client: clientId, wrote: null, installed: done, failed }, () => {
+    emit({ ok: !failed.length && !direct.length, dryRun: true, client: clientId, wrote: null, installed: done,
+      ...(direct.length ? { direct: direct.map(directOut), why: handWhy } : {}), failed }, () => {
       say(dim('nothing was written and nothing was installed — this is what would happen:'))
       for (const d of done) say(`  ${d.id} → ${d.url} (pasted into ${clientId} by hand)`)
+      for (const d of direct) handDirect(d, '  ')
       for (const f of failed) complain(f.name, f)
     })
-    if (failed.length) process.exitCode = 1
+    if (failed.length || direct.length) process.exitCode = 1
     return
   }
 
   if (!client) {
     emit({
-      ok: !failed.length,
+      ok: !failed.length && !direct.length,
       client: clientId,
       wrote: null,
       /* The header is in the answer: this is the fallback the README points to for clients this
@@ -748,8 +1036,10 @@ async function add() {
          form of the same entry (lib/byhand.js), for the clients the table knows. */
       installed: done.map((d) => {
         const form = setupFor(clientId, d.id, d.url, key())
-        return { ...d, header: { Authorization: 'Bearer ' + key() }, ...(form ? { setup: { code: form.code, how: form.how } } : {}) }
+        return { ...d, header: { Authorization: 'Bearer ' + key() },
+          ...(form ? { setup: { code: form.code, how: form.how, ...(form.powershell ? { powershell: form.powershell } : {}) } } : {}) }
       }),
+      ...(direct.length ? { direct: direct.map(directOut), why: handWhy } : {}),
       failed,
     }, () => {
       for (const d of done) {
@@ -760,8 +1050,7 @@ async function add() {
         const form = setupFor(clientId, d.id, d.url, key())
         if (form) {
           say(dim(`  ${clientId} is set up by hand, with ${form.what}:`))
-          for (const line of form.code.split('\n')) say(`    ${line}`)
-          say(dim(`  ${form.how}`))
+          printForm(form, '    ', '  ')
           if (form.key === 'env') {
             say(dim(process.env.MCPRUSH_KEY
               ? '  MCPRUSH_KEY is set in this shell.'
@@ -780,15 +1069,19 @@ async function add() {
           if (d.variables.where) say(dim(`    ${safe(d.variables.where)}`))
         }
       }
+      for (const d of direct) handDirect(d, '  ')
       for (const f of failed) complain(f.name, f)
     })
-    if (failed.length) process.exitCode = 1
+    /* a direct server for a client set up by hand is not in it until it is pasted (as `stack add`) */
+    if (failed.length || direct.length) process.exitCode = 1
     return
   }
 
+  const toWrite = direct.filter((d) => d.written)
   if (DRY) {
     const also = copies.map((c) => c.t.file)
-    emit({ ok: !failed.length, dryRun: true, file: client.file, ...(also.length ? { also } : {}), unreadable, installed: done, failed }, () => {
+    emit({ ok: !failed.length, dryRun: true, file: client.file, ...(also.length ? { also } : {}), unreadable, installed: done,
+      ...(direct.length ? { direct: direct.map(directOut) } : {}), failed }, () => {
       say(dim('nothing was written — this is what would be:'))
       say(`  ${client.file}`)
       if (unreadable) say(red('  and it would not be, as things stand: ') + String(unreadable).split('\n')[0])
@@ -797,6 +1090,10 @@ async function add() {
         if (c.unreadable) say(red('  and it would not be, as things stand: ') + String(c.unreadable).split('\n')[0])
       }
       for (const d of done) say(`  ${d.id} → ${safe(d.url)}${d.forced ? '  (--force: replaces an entry this tool did not write)' : ''}`)
+      for (const d of direct) {
+        say(`  ${d.key} → ${said(d.line)}${d.kept ? `  (${safe(d.why)})` : ''}`)
+        directLines(d, client.file, '    ')
+      }
       for (const f of failed) complain(f.name, f)
     })
     if (failed.length) process.exitCode = 1
@@ -811,7 +1108,7 @@ async function add() {
   let also = []
   let swapped = 0
   let notes = null
-  if (done.length || swappedBefore) {
+  if (done.length || toWrite.length || swappedBefore) {
     ({ file, also, swapped, notes } = writeEntries(client, (bucket, t, first) => {
       /* what was there before this write, not after the first entry of it went in */
       const before = { ...bucket }
@@ -823,6 +1120,15 @@ async function add() {
         }
         bucket[d.id] = entryFor(t.shape, d.url, key())
       }
+      for (const d of toWrite) {
+        /* the decisions above were taken on the first file; in a copy, an entry of the
+           person's under the name — their own filled-in one, say — is left as it is */
+        const there = before[d.key]
+        if (!first && !FORCE && Object.hasOwn(before, d.key) && !ownEntry(there) && !directEntryOurs(t.shape, d.started, there)) continue
+        guardOwn(t, bucket, d.key, (x) => directEntryOurs(t.shape, d.started, x))
+        if (first) d.replaced = Object.hasOwn(before, d.key)
+        bucket[d.key] = d.entry
+      }
     /* the undo advice names what THIS run put on the account: a row the account already
        held (unchanged) is not something a failed write should tell the person to remove */
     }, done.filter((d) => !d.unchanged)))
@@ -833,16 +1139,22 @@ async function add() {
   for (const f of ['scopes', 'pack', 'track']) {
     if (typeof args.flags[f] === 'string') ignoredFlags.push({ flag: f, value: args.flags[f], why: 'this tool has no such setting' })
   }
+  const one = single && direct.length ? direct[0] : null
   emit({
     ok: !failed.length,
     /* one name — the old shape of the reply, which scripts and scripts/check-cli.mjs read */
     ...(single && done.length
       ? { id: done[0].id, url: done[0].url, replaced: done[0].replaced, unchanged: done[0].unchanged }
       : {}),
+    /* and for a direct server, the line it starts with and what it needs, as its refusal carried them */
+    ...(one
+      ? { id: one.key, start: one.local ? one.serve : one.line, replaced: !!one.replaced, ...(one.needs ? { needs: one.needs } : {}) }
+      : {}),
     client: clientId,
     wrote: file,
     ...(also.length ? { alsoWrote: also } : {}),
     installed: done,
+    ...(direct.length ? { direct: direct.map(directOut) } : {}),
     failed,
     ...(ignoredFlags.length ? { ignored: ignoredFlags } : {}),
   }, () => {
@@ -863,6 +1175,23 @@ async function add() {
         if (d.variables.where) say(dim(`    ${safe(d.variables.where)}`))
         if (d.variables.note) say(dim(`    ${said(d.variables.note)}`))
       }
+    }
+    /* A direct server: its line is printed beside the entry — it is somebody else's package, and
+       the person restarting the client should have seen what it will run. */
+    for (const d of direct) {
+      /* an address is dialled, a command (Claude Desktop's bridge to that address included) is started */
+      const how = /^[a-z][a-z0-9+.-]*:\/\//i.test(d.line || '') ? 'it connects to' : 'it starts with'
+      if (d.kept) {
+        say(`= ${bold(safe(d.name) || safe(d.key))} — ${safe(d.why)}`)
+        say(dim(`  ${how}: ${said(d.line)}`))
+      } else {
+        say(green('✓') + ` ${bold(safe(d.name) || safe(d.key))} → ${client.name}`)
+        say(dim(`  ${d.replaced ? 'entry replaced' : 'entry added'} — ${how}: ${said(d.line)}`))
+        say(dim('  not through the gateway: nothing was installed on the account, and no key is needed'))
+      }
+      if (d.differs) say(dim(`  the marketplace printed a different line for it: ${said(d.start)}`))
+      directLines(d, file || client.file, '  ')
+      if (d.page) say(dim(`  ${safe(d.page)}`))
     }
     /* A refusal on one name is still an error and belongs on stderr. */
     for (const f of failed) complain(f.name, f)
@@ -903,12 +1232,19 @@ async function add() {
    client starts itself (`direct`) go in as command or address entries; the rest are named
    with the reason. Every one of the twenty curated stacks on the catalogue is made of direct
    members, so until they were written this command installed nothing from any of them. */
+/* A CLIENT THIS TOOL DOES NOT WRITE GETS NO TICK. For codex, gemini, grok, ChatGPT, DeepSeek,
+   Copilot, Perplexity, the Agents SDK and a bare API the command drew ✓, "0 installed, 4 to set
+   up by hand", exit 0 — with nothing written anywhere — and then the bare `npx -y …` lines, in no
+   client's form and without the variables they need (test of 29 Sep 2026). Now it says first
+   that nothing was written, prints every member the way that client takes it (lib/byhand.js),
+   and exits 1: the stack is not in the client until the person pastes it there. */
 async function stack() {
   /* `stack remove x` was read as a stack called `remove`: one wasted request and a wrong answer */
-  if (args._[1] !== 'add') throw new Refused('`mcprush stack` takes `add`: mcprush stack add <stack>')
-  const name = args._[2]
-  if (!name) throw new Refused('Which stack? `mcprush stack add <stack>`')
-  requireKey()
+  if (args._[1] !== 'add') throw new Refused(`\`mcprush stack\` takes \`add\`: ${NPX} stack add <stack>`)
+  const name = typeof args._[2] === 'string' ? tidyName(args._[2]) : ''
+  if (!name) throw new Refused(`Which stack? \`${NPX} stack add <stack>\``)
+  /* no key asked for yet: the direct members need none, and the marketplace names them without
+     one (keyless); a gateway member asks for it below */
   const clientId = await resolveClient()
   const client = clientOf(clientId)
 
@@ -934,7 +1270,7 @@ async function stack() {
   const theirs = (k) => !FORCE && !!theirsIn(files, k)
   const filed = await filedAs(clientId)
 
-  const res = await api.stack(name, filed)
+  const res = await keyless(() => api.stack(name, filed))
   /* The shape is checked: `added: null` would fall out of the loop as a bare stack trace. */
   if (!res || !Array.isArray(res.added) || !Array.isArray(res.skipped)) {
     throw new Refused(`${host()} answered without a list of what a stack installs. Nothing was written.`)
@@ -983,6 +1319,8 @@ async function stack() {
     }
   }
   const everyGateway = [...res.added, ...held]
+  /* a gateway entry carries the key: none is written without one */
+  if (everyGateway.length) requireKey()
 
   /* Every address is checked as a set before the first entry is written: entryFor() refuses
      one at a time, and half a stack written then refused leaves a config nobody asked for. */
@@ -1007,7 +1345,6 @@ async function stack() {
      and then this is the empty list and nothing below says a word about it. Each one is
      settled here — entry built, or the reason it was not — before anything is written, so
      the file is still written once, whole, or not at all. */
-  const norm = (u) => { try { return new URL(u).toString() } catch { return String(u) } }
   const direct = (Array.isArray(res.direct) ? res.direct : [])
     .filter((d) => d && typeof d === 'object')
     .map((d) => {
@@ -1015,61 +1352,61 @@ async function stack() {
         id: String(d.id ?? ''),
         name: String(d.name ?? d.id ?? ''),
         source: d.source && typeof d.source === 'object' ? d.source : null,
-        start: typeof d.start === 'string' && d.start ? d.start : null,
+        /* no line for a package gone from its registry: its reason is printed instead */
+        start: typeof d.start === 'string' && d.start && !sourceGone(d.source) ? d.start : null,
         page: typeof d.page === 'string' && d.page ? d.page : null,
       }
-      const started = directStart(item.source)
-      if (started.why) return { ...item, written: false, why: started.why }
-      if (!client) return { ...item, written: false, why: `${clientId} is set up by hand` }
-      /* The same check the gateway members get, with a different outcome: a member named
-         `__proto__` or `a/b` is not written, is said so, and does not stop the others. */
-      const k = safeEntryKey(item.id)
-      if (!k) return { ...item, written: false, why: 'named in a way this tool will not write into a config' }
-      const entry = directEntryFor(client.shape, started)
-      /* WHAT IS PRINTED IS WHAT IS WRITTEN. The marketplace's own line was printed while the
-         entry was built here, so an image with variables printed `-e DATABASE_URL` and wrote
-         none. The line comes from the entry; the marketplace's is shown beside it only when
-         the two disagree, marked as such. */
-      const launch = started.command ? [started.command, ...started.args].join(' ') : started.url
-      const differs = !!item.start && (started.url ? norm(item.start) !== started.url : item.start !== launch)
-      const need = Array.isArray(started.need) ? started.need : []
-      const may = Array.isArray(started.may) ? started.may : []
-      const launcher = Array.isArray(started.launcher) ? started.launcher : []
-      const base = {
-        ...item, key: k, line: entryLine(entry), started,
-        ...(need.length ? { needs: need } : {}), ...(may.length ? { mayNeed: may } : {}),
-        ...(launcher.length ? { launcherEnv: launcher } : {}), ...(differs ? { differs: true } : {}),
-      }
-      /* A direct entry is ours to replace only when it is the one this run would write, the
-         one 0.1.4 wrote for the same member (directEntryOurs), or a gateway entry of ours. One
-         that starts the same thing with the person's values in its env is theirs, filled in,
-         and kept — and still told what it lacks; anything else under the name is refused. */
-      if (bucket && !FORCE && Object.hasOwn(bucket, k)) {
-        const there = bucket[k]
-        if (!ownEntry(there) && !directEntryOurs(client.shape, started, there)) {
-          if ([entry, ...legacyEntriesFor(client.shape, started)].some((e) => sameLaunch(there, e))) {
-            const theirs = there.env && typeof there.env === 'object' && !Array.isArray(there.env) ? there.env : {}
-            const unset = (v) => typeof theirs[v] !== 'string' || !theirs[v] || theirs[v] === ENV_PLACEHOLDER
-            const { needs: _n, mayNeed: _m, ...rest } = base
-            const stillNeeds = need.filter(unset)
-            const stillMay = may.filter((v) => !Object.hasOwn(theirs, v))
-            return {
-              ...rest, ...(stillNeeds.length ? { needs: stillNeeds } : {}), ...(stillMay.length ? { mayNeed: stillMay } : {}),
-              written: false, kept: true,
-              why: Object.keys(theirs).length
-                ? 'already in the file, with values of yours — left as it is'
-                : 'already in the file — left as it is',
-            }
-          }
-          conflicts.push({ id: k, why: 'an entry you wrote is under this name' })
-          return { ...base, written: false, conflict: true, why: 'an entry you wrote is under this name — left alone; --force replaces it' }
-        }
-      }
-      return { ...base, written: true, entry }
+      const settled = settleDirect(item, d.needs, client, clientId, bucket)
+      if (settled.conflict) conflicts.push({ id: settled.key, why: 'an entry you wrote is under this name' })
+      return settled
     })
   const toWrite = direct.filter((d) => d.written)
   const kept = direct.filter((d) => d.kept)
   const byHand = direct.filter((d) => !d.written && !d.kept && !d.conflict)
+
+  /* THE SKILLS OF A STACK ARE NAMED WITH THEIR COMMAND. They were skipped as "a skill — read by
+     your client, not routed", and the person was left to find each one. A skill is a folder this
+     tool does write, one `skill add` each; the marketplace sends the publisher and the page's
+     slug where it can (`pub`, `slug`), and the key alone resolves where it cannot. */
+  const isSkill = (sk) => !!sk && (sk.kind === 'skill' || /^a skill\b/i.test(String(sk.why || '')))
+  /* the marketplace's own `command` names the skill the way its page does (`<publisher>/<slug>`):
+     the route sends that rather than `pub` and `slug`, and a key alone is not the page's name —
+     `lingzhi227-deep-research` is `lingzhi227/deep-research` there. Only the name is taken from
+     it, and held to parseRef; the command is built here. */
+  const refOfCommand = (c) => {
+    const at = /^npx mcprush@latest skill add (\S+)$/.exec(typeof c === 'string' ? c.trim() : '')
+    return at ? at[1] : null
+  }
+  const skills = res.skipped.filter(isSkill).map((sk) => {
+    const bare = String(sk.id ?? '')
+    const pub = typeof sk.pub === 'string' && sk.pub ? sk.pub : null
+    const slug = typeof sk.slug === 'string' && sk.slug ? sk.slug : bare
+    const named = refOfCommand(sk.command)
+    let ref = null
+    for (const n of [named, pub ? `${pub}/${slug}` : null, bare]) {
+      if (!n) continue
+      try { ref = parseRef(n); break } catch { ref = null }
+    }
+    const command = ref
+      ? `${NPX} skill add ${ref.pub ? ref.pub + '/' : ''}${ref.id}${clientId === 'claude-code' ? '' : ' --client ' + clientId}`
+      : null
+    return { id: bare, name: String(sk.name ?? bare), command }
+  })
+
+  /* WHAT NEEDS A KEY, WHEN THERE IS NONE. The marketplace answers a stack without a key now, with
+     its direct members; a member behind the gateway is installed on an account, and comes back
+     skipped for want of one (`needsKey`, or a reason that says so). Nothing but those is a stack
+     that has nothing to do yet but the login, and that is the old refusal. */
+  const skippedOnly0 = res.skipped.filter((sk) => !isSkill(sk))
+  /* A direct member is skipped too, with its start line in `why` — `npx -y @acme/key`, or a page
+     at /acme/key-vault — so it is never one of these, and the reason has to say a key is needed,
+     not merely contain the word. */
+  const directNamed = new Set(direct.map((d) => d.id))
+  const needKey = key() ? [] : skippedOnly0.filter((sk) => sk && !directNamed.has(String(sk.id))
+    && (sk.needsKey === true || /\bneeds? a key\b|\bkey from your account\b/i.test(String(sk.why || ''))))
+  if (needKey.length && !toWrite.length && !kept.length && !byHand.length && !skills.length) {
+    throw Object.assign(keyMissing(), { where: res.page || host() + '/stack/' + encodeURIComponent(name) })
+  }
 
   let wrote = null
   let also = []
@@ -1099,61 +1436,116 @@ async function stack() {
   const directIds = new Set(direct.map((d) => d.id))
   const heldIds = new Set(held.map((h) => h.id))
   const conflictIds = new Set(conflicts.map((c) => c.id))
-  const skippedOnly = res.skipped.filter((sk) => !(sk && (directIds.has(String(sk.id)) || heldIds.has(String(sk.id)) || conflictIds.has(String(sk.id)))))
+  const skippedOnly = skippedOnly0.filter((sk) => !(sk && (directIds.has(String(sk.id)) || heldIds.has(String(sk.id)) || conflictIds.has(String(sk.id)))))
+  /* the gateway members, for a client that is set up by hand: its own form of each, as `add` prints it */
+  const gatewaySetup = client ? [] : gateway.map((a) => {
+    const url = checkedUrl(a.url)
+    const form = setupFor(clientId, safeEntryKey(a.id), url, key())
+    return { id: safeEntryKey(a.id), url, ...(form ? { what: form.what, code: form.code, how: form.how, key: form.key,
+      ...(form.powershell ? { powershell: form.powershell } : {}) } : {}) }
+  })
+  const handWhy = `${clientId} is set up by hand, so nothing was written: paste each member into it yourself`
+  /* the client as the marketplace's table names it — "ChatGPT", "OpenAI Agents SDK" — for the
+     one sentence that is about the client rather than its id (noFolder reads it the same way) */
+  const tableRow = NO_SKILL_FOLDER.has(clientId) && !client ? ((await clientTable()) || []).find((r) => r.id === clientId) : null
+  const clientName = client ? client.name : (tableRow && typeof tableRow.name === 'string' && safe(tableRow.name)) || clientId
 
   emit({
-    ok: !conflicts.length, stack: name, added: res.added, held, skipped: res.skipped, wrote,
+    ok: client ? !conflicts.length : false, stack: name, added: res.added, held, skipped: res.skipped, wrote,
     ...(also.length ? { alsoWrote: also } : {}), client: clientId,
+    ...(client ? {} : { why: handWhy, gatewaySetup: gatewaySetup.map(({ key: _k, ...g }) => g) }),
     /* `key` is the entry name inside the file, which is the id already checked; the rest —
        the entry as written, or the reason it was not — is what a script wants to read */
     direct: direct.map(({ key: _k, started: _s, ...d }) => d),
+    ...(skills.length ? { skills } : {}),
+    ...(needKey.length ? { needKey: needKey.map((sk) => String(sk.id)) } : {}),
     conflicts,
     counts: {
       added: res.added.length, direct: direct.length, skipped: res.skipped.length,
       directWritten: toWrite.length, byHand: byHand.length,
     },
   }, () => {
+    /* the tail every client gets: the skills with their command, what waits for a key */
+    const tail = () => {
+      if (skills.length) {
+        say('')
+        /* Claude Desktop, ChatGPT, Copilot, Perplexity, the Agents SDK and a bare API read no
+           skills folder (NO_SKILL_FOLDER): for them `skill add` writes nothing and says how the
+           client takes the skill instead, so "this tool writes each one" would not be true */
+        say(NO_SKILL_FOLDER.has(clientId)
+          ? `  ${bold('Skills')} — ${safe(clientName)} reads no skills folder, so each of these says how it takes the skill instead:`
+          : `  ${bold('Skills')} — folders rather than servers; this tool writes each one:`)
+        for (const s of skills) say(s.command ? `      ${said(s.command)}` : dim(`      ${safe(s.name)} — named in a way this tool will not put into a command`))
+      }
+      if (needKey.length) {
+        say('')
+        say(`  ${needKey.length === 1 ? '1 member goes' : needKey.length + ' members go'} through the gateway and need${needKey.length === 1 ? 's' : ''} a key: `
+          + `run \`${NPX} login\`, then this command again`)
+        say(dim(`  ${host()}/dashboard#access`))
+      }
+    }
+
+    if (!client) {
+      /* no tick, and the first line says it: nothing is in the client yet */
+      say(`${bold(safe(res.name) || safe(name))} — nothing was written: ${safe(clientId)} is set up by hand, so paste each of these into it yourself`)
+      if (res.added.length) say(dim(`  ${res.added.length} installed on your account, through the gateway`))
+      let keyed = null
+      for (const g of gatewaySetup) {
+        say(`  • ${bold(safe(g.id))}${dim('  — through the gateway, on your account')}`)
+        if (g.code) {
+          printForm(g, '      ', '      ')
+          keyed = keyed || g.key
+        } else {
+          say(`      url    ${safe(g.url)}`)
+          say(`      header Authorization: Bearer ${key()}`)
+        }
+      }
+      if (keyed === 'env') {
+        say(dim(process.env.MCPRUSH_KEY
+          ? '  MCPRUSH_KEY is set in this shell.'
+          : `  MCPRUSH_KEY is not set in this shell; the key this tool holds is ${key()}`))
+      } else if (keyed === 'paste') {
+        say(`      your key: ${key()}`)
+      }
+      for (const d of direct) {
+        say(`  • ${bold(safe(d.name) || safe(d.id))}`)
+        const s = d.setup
+        if (s && s.code) {
+          printForm(s, '      ', '      ')
+        } else if (s) {
+          say(dim(`      ${said(s.how)}`))
+        } else {
+          /* no line at all: the reason, as before */
+          say(dim(`      ${safe(d.why)}`))
+        }
+        /* the step before its first start, and the terminal a server that serves HTTP runs in */
+        if (s) directLines(d, null, '      ')
+        if (d.page) say(dim(`      ${safe(d.page)}`))
+      }
+      for (const sk of skippedOnly) say(dim(`  · ${safe(sk.id)} — ${safe(sk.why)}`))
+      if (skippedOnly.some((x) => String(x.why || '').startsWith('paid'))) say(dim('  ' + safe(res.page || '')))
+      tail()
+      return
+    }
+
     const tally = [`${res.added.length} installed`]
-    if (held.length) tally.push(`${held.length} already on the account${client ? ', written' : ''}`)
+    if (held.length) tally.push(`${held.length} already on the account, written`)
     if (toWrite.length) tally.push(`${toWrite.length} written from ${toWrite.length === 1 ? 'its' : 'their'} own source`)
     if (kept.length) tally.push(`${kept.length} already in the file`)
     if (byHand.length) tally.push(`${byHand.length} to set up by hand`)
     if (conflicts.length) tally.push(`${conflicts.length} left alone`)
     say(green('✓') + ` ${bold(safe(res.name) || safe(name))} — ${tally.join(', ')}`)
-    /* A client we do not write has to be named, or the installs land in silence — with the
-       address beside each id, since that is what the header goes with. */
-    if (!client) {
-      say(dim(`  ${clientId} is set up by hand — nothing was written to a config`))
-      if (gateway.length) say(dim(`  each address below goes with: Authorization: Bearer ${key()}`))
-    }
-    for (const a of gateway) say(dim('  + ' + safe(a.id) + (client ? '' : '  ' + safe(checkedUrl(a.url)))))
+    for (const a of gateway) say(dim('  + ' + safe(a.id)))
     /* The line the client will run is printed beside the entry: it is somebody else's
        package, and the person restarting the client should have seen it. */
-    /* What each member's variables ask of the person: a required one is in the entry as the
-       placeholder; one the marketplace does not mark is left out, since the server may well
-       start without it; a launcher's name is never written (sourceEnv). */
-    const envLines = (d) => {
-      const file = wrote || client.file
-      const list = (xs) => xs.map(safe).join(', ')
-      if (d.needs) {
-        const them = d.needs.length === 1 ? 'it' : 'them'
-        say(`      set ${list(d.needs)} in ${file}: `
-          + `${d.kept ? `your entry does not have ${them} yet` : `the entry holds ${ENV_PLACEHOLDER} until you do`}, and the server needs ${them} to work`)
-      }
-      if (d.mayNeed) {
-        /* "not marked as required" is true of a bare name and of { required: false } alike —
-           the form the marketplace sends since the audit — where "does not say" was not */
-        say(dim(`      may need ${list(d.mayNeed)} — ${d.mayNeed.length === 1 ? 'not marked as required, so it is not' : 'none is marked as required, so none is'} `
-          + `in the entry; add any the server asks for under env in ${file}`))
-      }
-      if (d.launcherEnv) {
-        say(dim(`      declares ${list(d.launcherEnv)}, which steer${d.launcherEnv.length === 1 ? 's' : ''} the launcher or the process `
-          + `itself — not written; set ${d.launcherEnv.length === 1 ? 'it' : 'them'} only if you know why`))
-      }
-    }
+    /* What each member asks of the person: its variables — a required one is in the entry as the
+       placeholder; one the marketplace does not mark is left out, since the server may well start
+       without it; a launcher's name is never written (sourceEnv) — the step before its first
+       start, and the terminal a server that serves HTTP runs in (directLines). */
+    const envLines = (d) => directLines(d, wrote || client.file, '      ')
     for (const d of toWrite) {
-      say(dim(`  + ${safe(d.id)}  ${safe(d.line)}${d.replaced ? '  (replaced)' : ''}`))
-      if (d.differs) say(dim(`      the marketplace printed a different line for it: ${safe(d.start)}`))
+      say(dim(`  + ${safe(d.id)}  ${said(d.line)}${d.replaced ? '  (replaced)' : ''}`))
+      if (d.differs) say(dim(`      the marketplace printed a different line for it: ${said(d.start)}`))
       envLines(d)
     }
     for (const d of kept) {
@@ -1178,25 +1570,26 @@ async function stack() {
       for (const d of byHand) {
         say(`  • ${bold(safe(d.name) || safe(d.id))}`)
         /* the start line where there is one, and always the reason it was not written:
-           "codex is set up by hand" beside a line to paste, "no console script" beside none */
-        if (d.start) say(`      ${safe(d.start)}`)
+           "no console script" beside none */
+        if (d.start) say(`      ${said(d.start)}`)
         say(dim(`      ${safe(d.why)}`))
         if (d.page) say(dim(`      ${safe(d.page)}`))
       }
     }
     if (conflicts.length) {
       say('')
-      say(`  ${bold('Left alone')} — an entry you wrote is under the same name in ${client ? client.file : clientId}:`)
+      say(`  ${bold('Left alone')} — an entry you wrote is under the same name in ${client.file}:`)
       for (const c of conflicts) say(`  • ${safe(c.id)}${dim(' — ' + safe(c.why))}`)
       say(dim('  rename or take out your entry and run the command again, or pass --force to replace it'))
     }
+    tail()
   })
-  if (conflicts.length) process.exitCode = 1
+  if (conflicts.length || !client) process.exitCode = 1
 }
 
 async function addList() {
   const name = args._[1]
-  if (!name) throw new Refused('Which list? `mcprush add-list <list>`')
+  if (!name) throw new Refused(`Which list? \`${NPX} add-list <list>\``)
   requireKey()
   const clientId = await resolveClient()
   const client = clientOf(clientId)
@@ -1347,7 +1740,7 @@ async function budget() {
   if (args._[1]) {
     throw new Refused(
       `\`${args._[1]}\` looks like a listing, and this ceiling is not per listing: it is one cap for the whole `
-      + 'account. Drop the name — `mcprush budget --max 900` — or set a per-install limit in your '
+      + `account. Drop the name — \`${NPX} budget --max 900\` — or set a per-install limit in your `
       + 'dashboard.',
       { how: host() + '/library' })
   }
@@ -1415,6 +1808,24 @@ async function budget() {
   })
 }
 
+/* WHAT THE NEXT CALL DOES DEPENDS ON THE PRICE. The gateway takes a free server again on the
+   first call a live key makes to it — the rule that lets a pasted address work without a visit
+   to the dashboard — so "the gateway will refuse calls to it now" was false for every free
+   listing: in a check on 29 Sep 2026 the install was back 0.8 s later, from a client that still
+   held the entry. The uninstall answer now says `free`, and the listing route always has, so
+   an older marketplace is read from that; with neither, the sentence is the one that is true
+   either way. A server that does not go through the gateway at all — connected straight to its
+   publisher, or run on your own machine: four of the seventeen live installs on 29 Sep 2026 —
+   neither comes back nor is refused: its entry keeps working from its own source, and revoking
+   the key would only cut off every other server. The listing route names the delivery. */
+const freeAfter = (free, direct) => (direct
+  ? 'it does not go through the gateway, so any client that still has its entry keeps using it: take it out of every client'
+  : free === true
+    ? 'a free server comes back the next time any client calls it with a live key: take it out of every client, or revoke the key'
+    : free === false
+      ? 'the gateway will refuse calls to it now'
+      : 'a paid server is refused from now on, but a free one comes back the next time any client calls it with a live key')
+
 /* `mcprush remove <server>` — THE ACCOUNT FIRST, THE FILE SECOND, AND ONLY AN ENTRY OF OURS.
    It used to delete any same-named entry and rewrite the file before asking the server: a
    hand-written `github` with its own token was gone by the time the server said "not
@@ -1426,10 +1837,11 @@ async function budget() {
 async function remove() {
   /* usage first, key second — as in add(): a missing name is a mistake at the keyboard, and
      "no key held" sends the person to the dashboard for an error about no key at all */
-  const name = args._[1]
-  if (!name) throw new Refused('Which server? `mcprush remove <server>`')
+  const name = typeof args._[1] === 'string' ? tidyName(args._[1]) : ''
+  if (!name) throw new Refused(`Which server? \`${NPX} remove <server>\``)
   const clientId = await resolveClient()
-  requireKey()
+  /* the key is asked for below, once the listing is named: the entry of a server the client starts
+     itself is taken out without one, as `add` wrote it without one */
   const client = clientOf(clientId)
 
   /* the pre-flight: a link, a file that is not JSON — refused before the account is touched */
@@ -1447,36 +1859,64 @@ async function remove() {
      one the account no longer holds, which the marketplace answers 409 (CA-5): `remove` stopped
      there and left the entry in the file, for a listing already off the account. */
   let id = name
+  /* whether the listing is free, as the listing route says it — the fallback for a marketplace
+     whose uninstall answer does not say it yet (freeAfter, below) */
+  let listedFree = null
+  /* and whether it goes through the gateway at all, as `add` reads it */
+  let direct = false
+  /* WHAT STARTS IT, FOR A SERVER THE CLIENT STARTS ITSELF. `add` and `stack add` write such a
+     server as the entry its page prints, with nothing of ours in it, and `remove` refused every one
+     of them as "not a gateway entry this tool wrote" — so the command that undoes `add` needed
+     --force for most of the catalogue. The entry this tool would write for it now, or one an
+     earlier version wrote (directEntryOurs), is ours to take out; one the person changed is not. */
+  let started = null
   try {
-    const listing = await api.listingRef(name)
+    /* without a key, a server behind the gateway answers 401 — worded for `add` ("adding it needs a
+       key", or its price and checkout): to `remove` it is the plain "no key held", as before */
+    const listing = key() ? await api.listingRef(name) : await api.listingRef(name).catch((err) => {
+      throw err instanceof Refused && err.status === 401 ? keyMissing() : err
+    })
     if (listing && typeof listing.id === 'string' && listing.id) id = listing.id
+    if (listing && typeof listing.free === 'boolean') listedFree = listing.free
+    const src = listing && listing.source && typeof listing.source === 'object' ? listing.source : null
+    if (listing && (listing.local === true || listing.delivery === 'direct' || listing.delivery === 'local'
+      || (!!src && ['npm', 'pypi', 'image'].includes(String(src.kind))))) direct = true
+    if (direct && src) {
+      const s = directStart(src, listing.needs)
+      started = s.why ? null : s
+    }
   } catch (err) {
     if (!(err instanceof Refused) || (err.status !== 404 && err.status !== 409)) throw err
   }
+  /* the account is asked below only with a key; a server behind the gateway is not taken out without one */
+  if (!direct) requireKey()
   /* The key is checked as `add` checks it: `toString` and `__proto__` were found on the
      prototype, the file was rewritten for nothing, and the tick said an entry came out. */
   const entryKey = safeEntryKey(id)
   const bucket = client ? atPath(data, client.at) : null
+  const isOurs = (t, entry) => ownEntry(entry) || (!!started && directEntryOurs(t.shape, started, entry))
   /* every file of the client that holds the entry — the first, and Claude Desktop's Store copy */
   const holders = [{ t: client, bucket }, ...copies]
     .filter((f) => f.t && f.bucket && entryKey && Object.hasOwn(f.bucket, entryKey))
-    .map((f) => ({ t: f.t, ours: ownEntry(f.bucket[entryKey]) }))
+    .map((f) => ({ t: f.t, ours: isOurs(f.t, f.bucket[entryKey]) }))
   const theirs = holders.find((h) => !h.ours) || null
   const ours = holders.length > 0 && !theirs
   if (theirs && !FORCE) {
     throw new Refused(
-      `${entryKey} in ${theirs.t.name} (${theirs.t.file}) is not a gateway entry this tool wrote: it is one you added `
-      + 'by hand, or a direct member `stack add` wrote — the same entry the listing page prints, with nothing of '
-      + 'ours in it. Nothing was changed. Take it out by hand, or pass --force to have this tool delete it.')
+      `${entryKey} in ${theirs.t.name} (${theirs.t.file}) is not a gateway entry this tool wrote, nor the entry it `
+      + 'writes for this server: it is one you added or changed by hand. Nothing was changed. Take it out by hand, '
+      + 'or pass --force to have this tool delete it.')
   }
 
+  /* no key, and a server that does not go through the gateway: there is no account to ask */
+  const noAccount = direct && !key()
   if (DRY) {
     const at = holders.map((h) => h.t.file)
     emit({ dryRun: true, id, file: at[0] ?? null, ...(at.length > 1 ? { also: at.slice(1) } : {}), ours, account: false }, () => {
       say(dim('nothing was changed — this is what would happen:'))
       for (const h of holders) say(`  ${entryKey} would come out of ${client.name}: ${h.t.file}${h.ours ? '' : ' (--force: not an entry of ours)'}`)
       if (!holders.length) say(`  ${safe(id)} is not in ${client ? client.name : 'any client this tool writes'}`)
-      say(dim('  and the account would be asked to take the install off'))
+      say(dim(noAccount ? '  and no account would be asked: it does not go through the gateway' : '  and the account would be asked to take the install off'))
     })
     return
   }
@@ -1486,9 +1926,15 @@ async function remove() {
      host that does not answer — leaves the file exactly as it was, and says so. */
   let account = false
   let offAccount = null
-  try {
-    await api.uninstall(id)
+  let free = null
+  if (noAccount && !holders.length) {
+    throw new Refused(`${id} is not in ${client ? client.name : 'a client this tool writes'}, so there was nothing to take `
+      + 'out. Nothing was changed.', { status: 404 })
+  }
+  if (!noAccount) try {
+    const gone = await api.uninstall(id)
     account = true
+    free = gone && typeof gone.free === 'boolean' ? gone.free : listedFree
   } catch (err) {
     if (!(err instanceof Refused)) throw err
     if (err.status !== 404) {
@@ -1514,7 +1960,7 @@ async function remove() {
            прочитанной до сети, а удаляется из свежей: между ними клиент (или
            человек) мог переписать запись своей, и та уходила без спроса
            (встречная проверка 12 сен 2026). */
-        if (!FORCE && Object.hasOwn(b, entryKey) && !ownEntry(b[entryKey])) {
+        if (!FORCE && Object.hasOwn(b, entryKey) && !isOurs(t, b[entryKey])) {
           throw new Refused(
             `${entryKey} in ${t.name} (${t.file}) changed while this ran and is no longer an entry `
             + 'this tool wrote. Nothing was taken out of the config — look at it, then pass --force if it should go.')
@@ -1542,20 +1988,60 @@ async function remove() {
   emit({
     ok: true, id, removedFrom: removedFrom.length ? removedFrom[0].file : null,
     ...(removedFrom.length > 1 ? { alsoRemovedFrom: removedFrom.slice(1).map((r) => r.file) } : {}),
-    account, ...(forced ? { forced: true } : {}),
+    account, ...(account && free !== null ? { free } : {}), ...(account && direct ? { direct: true } : {}),
+    ...(forced ? { forced: true } : {}),
   }, () => {
     say(green('✓') + ` ${safe(id)} removed`)
     for (const r of removedFrom) say(dim(`  out of ${client.name}: ${r.file}${r.ours ? '' : ' (--force: not an entry of ours)'}`))
-    if (account) say(dim('  uninstalled on the account — the gateway will refuse calls to it now'))
+    if (account) say(dim(`  uninstalled on the account — ${freeAfter(free, direct)}`))
+    else if (noAccount) say(dim('  it does not go through the gateway, so there was nothing to take off an account; any other client that has its entry keeps using it'))
     else say(dim(`  not on the account (${said(offAccount)}) — only the client entry was removed`))
     for (const n of notes) say(dim(`  ${n}`))
   })
 }
 
+/* No key, said with where one comes from and the two ways in: asked for in a terminal, or piped
+   in where there is none (an agent's shell, CI). */
+const LOGIN_WAYS = `Run \`${NPX} login\` and paste a key from your dashboard, or pipe one in: `
+  + `\`printf %s "$MCPRUSH_KEY" | ${NPX} login\`. For a single run, setting MCPRUSH_KEY is enough.`
+function keyMissing() {
+  return new Refused(`No key held yet. ${LOGIN_WAYS}`, { how: host() + '/dashboard#access' })
+}
 function requireKey() {
-  if (!key()) {
-    throw new Refused('No key held yet. Run `mcprush login`, or set MCPRUSH_KEY.',
-      { how: host() + '/dashboard#access' })
+  if (!key()) throw keyMissing()
+}
+
+/* THE KEY IS ASKED FOR WHEN THE NEXT STEP WRITES TO THE ACCOUNT, NOT BEFORE THE LISTING IS
+   NAMED. `add`, `skill add` and `stack add` asked for a key first, so a person made an account and
+   minted a key only to learn that the server was connected straight to its publisher, that the
+   "skill" was a server, that the skill was paid, or that every member of the stack was one the
+   client starts itself — none of which needs a key to be said. The marketplace answers those
+   questions without one now (/api/cli/listing for a direct or local server and a paid skill,
+   /api/cli/stack for the direct members). A marketplace older than that still answers 401, and
+   then the sentence is the one this tool always printed for no key. */
+/* A marketplace that says WHAT needs the key — "Brave Search runs behind the mcprush gateway, so
+   adding it needs a key from your account" — keeps its sentence: that is the answer this change
+   exists to give before the login. Only the bare "This needs a key…" of an older one is replaced;
+   either way the ways in are this tool's own, since an older one's `how` named `mcprush login`. */
+async function keyless(ask) {
+  try {
+    return await ask()
+  } catch (err) {
+    if (!key() && err instanceof Refused && err.status === 401) {
+      const told = String(err.message || '').trim()
+      /* A PAID ONE IS SAID TO BE PAID, WITH ITS PRICE AND ITS CHECKOUT, BEFORE THE LOGIN. A marketplace
+         that knows the listing is sold says so beside the 401 (`checkout`, and `price` or the plans);
+         the purchase comes first, and the key after it. */
+      const price = priceSay(err)
+      if (err.checkout) {
+        throw new Refused(`${told}${price ? ` It is a paid listing (${price}).` : ''} Buy it at the checkout link below, `
+          + `then log in with a key from the account that bought it. ${LOGIN_WAYS}`,
+        { status: 401, checkout: err.checkout, ...(price ? { price } : {}), how: host() + '/dashboard#access' })
+      }
+      if (!told || /^This needs a key\b/i.test(told)) throw keyMissing()
+      throw new Refused(`${told} ${LOGIN_WAYS}`, { status: 401, how: host() + '/dashboard#access' })
+    }
+    throw err
   }
 }
 
@@ -1645,10 +2131,10 @@ async function skill() {
      removal. Anything but these three words stops here, before a request. */
   const VERBS = { add: 'add', remove: 'remove', rm: 'remove' }
   const verb = VERBS[args._[1]]
-  if (!verb) throw new Refused('`mcprush skill` takes `add` or `remove`: mcprush skill add <skill>')
+  if (!verb) throw new Refused(`\`mcprush skill\` takes \`add\` or \`remove\`: ${NPX} skill add <skill>`)
   /* A list, because the catalogue's "install selected" builds `skill add <a> <b> <c>`. */
-  const named = args._.slice(2).filter((n) => typeof n === 'string' && n.length)
-  if (!named.length) throw new Refused(`Which skill? \`mcprush skill ${verb} <skill>\``)
+  const named = [...new Set(args._.slice(2).filter((n) => typeof n === 'string' && n.length).map(tidyName).filter(Boolean))]
+  if (!named.length) throw new Refused(`Which skill? \`${NPX} skill ${verb} <skill>\``)
   const clientId = await resolveClient()
   if (named.length > 1) {
     /* One answer per command: an emit() per skill put several JSON documents on stdout. */
@@ -1669,6 +2155,7 @@ async function skill() {
         if (DRY) say(`  ${safe(r.name || r.id)}${r.dir ? ' → ' + r.dir : ''}`)
         else say(green('✓') + ` ${bold(safe(r.name || r.id))}${r.dir ? dim(' → ' + r.dir) : ''}`)
         if (r.kept && r.kept.length) say(dim(`    kept ${safe(r.kept.map((k) => k.path).join(', '))}`))
+        for (const n of r.notes || []) say(dim(`    ${said(n)}`))
       }
       for (const r of bad) console.error(red('•') + ` ${safe(r.id)} — ${said(r.error)}`)
     })
@@ -1700,16 +2187,32 @@ function noFolder(verb, clientId, row, listing, name) {
   if (verb === 'remove') {
     return `${called} has no skills folder on disk, so there is nothing of it to delete here${clientId === 'claude'
       ? ' — a skill added under Customize › Skills is taken out there. An earlier version of this tool wrote '
-        + `such skills into the project's .claude/skills/, and \`mcprush skill remove ${name}\` (Claude Code's folder) takes that out.`
+        + `such skills into the project's .claude/skills/, and \`${NPX} skill remove ${name}\` (Claude Code's folder) takes that out.`
       : clientId === 'agents'
         ? ' — a folder you unpacked for it yourself is yours to delete. Up to 0.2.0 this tool wrote such skills into '
-          + `the project's .claude/skills/, and \`mcprush skill remove ${name}\` (Claude Code's folder) takes that out.`
+          + `the project's .claude/skills/, and \`${NPX} skill remove ${name}\` (Claude Code's folder) takes that out.`
         : '.'}`
   }
   const at = `${host()}/api/skills/${encodeURIComponent(listing.id)}`
   const paid = listing.free === false
   const served = paid ? '; a paid skill\'s download is served against your key (Authorization: Bearer)' : ''
-  const unpack = `mkdir -p skills && curl -fsSL ${at}/bundle.tar.gz${paid ? ' -H "Authorization: Bearer $MCPRUSH_KEY"' : ''} | tar -xz -C skills`
+  /* the archive as a file first, then tar — as the site prints it: `curl -f … | tar -xz` exited 0
+     on a 401 on macOS (the pipe's status is tar's, and bsdtar unpacks an empty stream happily) */
+  /* NO `mkdir -p skills &&`: PowerShell's mkdir is New-Item, which stops at "already exists" the
+     second time, and `&&` is a parse error in Windows PowerShell 5.1. curl makes the folder itself
+     (--create-dirs), as the site prints it; on Windows a second line does the same with curl.exe
+     and tar.exe, which ship with Windows 10 since 1803 (test of 29 Sep 2026). */
+  const slug = String(listing.slug || listing.id).replace(/[^A-Za-z0-9._-]/g, '-')
+  const file = `skills/${slug}.tar.gz`
+  /* EACH LINE ON A LINE OF ITS OWN: set inside the sentence, between two dashes, the line was
+     copied with the words around it by a triple click, and the paste did not run. */
+  const unpack = `\n  curl -fsSL --create-dirs -o ${file} ${at}/bundle.tar.gz${paid ? ' -H "Authorization: Bearer $MCPRUSH_KEY"' : ''}`
+    + ` && tar -xzf ${file} -C skills && rm ${file} && echo "Installed skills/${slug}"`
+    + (onWindows()
+      ? `\n  in PowerShell:\n  curl.exe -fsSL --create-dirs -o ${file} ${at}/bundle.tar.gz`
+        + `${paid ? ' -H "Authorization: Bearer $env:MCPRUSH_KEY"' : ''}; if ($?) { tar -xzf ${file} -C skills; `
+        + `if ($?) { Remove-Item ${file}; "Installed skills/${slug}" } }`
+      : '')
   switch (clientId) {
     case 'claude':
       return 'Claude Desktop has no skills folder on disk: it takes a skill as a zip, under Customize › Skills › + › '
@@ -1729,16 +2232,80 @@ function noFolder(verb, clientId, row, listing, name) {
         + `was written. Download it — ${at}/bundle.zip?in=folder — and upload it there${served}.`
     case 'agents':
       return 'The OpenAI Agents SDK reads no skills folder by itself, so nothing was written — the .claude/skills/ '
-        + 'folder earlier versions of this tool wrote is the Claude Agent SDK\'s. Unpack the folder yourself — '
-        + `${unpack} — and pass the SKILL.md inside it to the agent as its instructions, read from the file.`
+        + 'folder earlier versions of this tool wrote is the Claude Agent SDK\'s. Unpack the folder yourself with the '
+        + `line below, and pass the SKILL.md inside it to the agent as its instructions, read from the file.${unpack}`
     case 'api':
-      return 'A call over the API reads no skills folder, so nothing was written. Unpack the folder yourself — '
-        + `${unpack} — and put the SKILL.md inside it into the prompt your code sends the model, with any reference `
-        + 'files, scripts or templates it points to.'
+      return 'A call over the API reads no skills folder, so nothing was written. Unpack the folder yourself with the '
+        + 'line below, and put the SKILL.md inside it into the prompt your code sends the model, with any reference '
+        + `files, scripts or templates it points to.${unpack}`
     default:
       return `${called} reads no skills folder from disk, so nothing was written. Download the skill as a zip — `
         + `${at}/bundle.zip — and add it the way ${called} takes skills.`
   }
+}
+
+/* the four clients that take a skill as an upload, the zip each wants, and where it goes */
+const UPLOAD = new Map([
+  ['claude', { inFolder: true, how: 'Claude Desktop takes it under Customize › Skills › + › Create skill › Upload a skill. '
+    + 'Code execution and file creation has to be on; on Team and Enterprise an owner turns on both it and Skills '
+    + 'under Organization settings › Plugins & skills.' }],
+  ['openai', { inFolder: true, how: 'ChatGPT takes it under Skills → Create → Upload from your computer; the desktop '
+    + 'and web apps keep separate lists.' }],
+  ['copilot', { inFolder: false, how: 'Copilot Studio takes it under your agent → Build → Skills → Add skill → Upload '
+    + 'a skill (agents on the GitHub Copilot harness). This zip has SKILL.md at its root, as Copilot Studio wants it.' }],
+  ['perplexity', { inFolder: true, how: 'Perplexity takes it in Perplexity Computer under Skills → Create skill → Upload '
+    + 'a skill, or on the Skills page of the API Portal for the Agent API.' }],
+])
+
+async function skillZipSave(listing, clientId, quiet) {
+  const up = UPLOAD.get(clientId)
+  const slug = safeFolder(typeof listing.slug === 'string' && listing.slug ? listing.slug : listing.id)
+  if (!slug) throw new Refused(`\`${String(listing.slug || listing.id).slice(0, 64)}\` is not a file name this tool will write. Nothing was saved.`)
+  const file = join(process.cwd(), slug + '.zip')
+  const there = lstatSync(file, { throwIfNoEntry: false })
+  if (there && !there.isFile()) {
+    throw new Refused(`${file} is ${there.isDirectory() ? 'a folder' : 'not a file'}, so the zip was not saved over it. Nothing was saved.`)
+  }
+  if (DRY) {
+    const out = { id: listing.id, name: listing.name, file, exists: !!there, client: clientId, upload: up.how }
+    if (quiet) return out
+    emit({ dryRun: true, ...out }, () => {
+      say(dim('nothing was saved — this is what would be:'))
+      say(`  ${file}${there ? '  (it exists: it would be refused without --force, unless it is the same zip)' : ''}`)
+      say(dim(`  ${up.how}`))
+    })
+    return
+  }
+  let body
+  try {
+    body = await skillZip(listing.id, up.inFolder)
+  } catch (err) {
+    if (!(err instanceof Refused)) throw err
+    throw new Refused(`${err.message} Nothing was saved.`, { ...extrasOf(err), ...(err.status ? { status: err.status } : {}) })
+  }
+  const same = !!there && readFileSync(file).equals(body)
+  if (there && !same && !FORCE) {
+    throw new Refused(`${file} exists and is not this zip. Nothing was saved — move it aside, or pass --force to replace it; `
+      + '--force keeps no copy.')
+  }
+  if (!same) {
+    const tmp = file + '.tmp-' + process.pid
+    try {
+      rmSync(tmp, { force: true })
+      writeFileSync(tmp, body, { flag: 'wx', mode: 0o644 })
+      renameSync(tmp, file)
+    } catch (err) {
+      try { rmSync(tmp, { force: true }) } catch { /* best effort */ }
+      throw new Refused(`${file} could not be written (${err?.code || err?.message}). Nothing was saved.`)
+    }
+  }
+  const out = { id: listing.id, name: listing.name, file, bytes: body.length, replaced: !!there && !same, client: clientId, upload: up.how }
+  if (quiet) return { ...out, dir: file }
+  emit({ ok: true, ...out }, () => {
+    say(green('✓') + ` ${bold(safe(listing.name))} → ${file}`)
+    say(dim(`  ${Math.max(1, Math.round(body.length / 1024))} KB${same ? ', the same zip as the one already there' : there ? ', replacing the one that was there' : ''}`))
+    say(dim(`  ${up.how}`))
+  })
 }
 
 async function skillOne(verb, name, clientId, opts = {}) {
@@ -1764,13 +2331,28 @@ async function skillOne(verb, name, clientId, opts = {}) {
       }
     }
   } else {
-    listing = await api.listingRef(name)
+    /* without a key where the marketplace answers without one (keyless): a free skill, a paid
+       one's price, a server asked for as a skill */
+    listing = await keyless(() => api.listingRef(name))
     asked = true
   }
   if (listing.kind !== 'skill') {
     throw new Refused(
       `${listing.name} is an MCP server, not a skill: it is installed as a config entry rather than as a `
-      + `folder. Use \`mcprush add ${name}\`.\n  ${listing.page}`)
+      + `folder. Use \`${NPX} add ${name}\`.\n  ${listing.page}`)
+  }
+  /* A PAID SKILL IS SAID TO BE PAID BEFORE A KEY IS ASKED FOR. Without a key the answer was "This
+     needs a key from your account": the person minted one, logged in, and only then read that the
+     skill is sold, and where. The price and the checkout come first now; the key is the second
+     step, after the purchase. With a key, the marketplace's own answer stands (it knows what the
+     account holds). */
+  if (verb === 'add' && listing.free === false && !listing.installed && !key()) {
+    const price = priceSay(listing)
+    throw new Refused(
+      `${listing.name} is a paid skill${price ? ` (${price})` : ''}. Buy it at the checkout link below, then run `
+      + `\`${NPX} login\` with a key from your dashboard and this command again: the folder is handed out against the key `
+      + 'of the account that bought it.',
+      { checkout: listing.checkout, ...(price ? { price } : {}), how: host() + '/dashboard#access' })
   }
 
   /* THE MARKETPLACE'S TABLE IS THE ANSWER, AN EMPTY FOLDER INCLUDED. A client whose row names
@@ -1790,6 +2372,11 @@ async function skillOne(verb, name, clientId, opts = {}) {
     if (typeof row.skillsDir === 'string' && row.skillsDir.trim()) declaredDir = row.skillsDir
     else none = true
   }
+  /* AN UPLOAD CLIENT GETS THE ZIP IT UPLOADS. Claude Desktop, ChatGPT, Copilot Studio and Perplexity
+     take a skill as a zip from the person's disk, and the only way to that zip was a bash line —
+     `curl … && …`, a parse error in Windows PowerShell — or a link to click (test of 29 Sep 2026).
+     The zip is saved into this folder instead, a paid one against the key, with where to upload it. */
+  if (none && verb === 'add' && UPLOAD.has(clientId)) return skillZipSave(listing, clientId, quiet)
   if (none) throw new Refused(noFolder(verb, clientId, row, listing, name))
 
   /* The folder is named by the slug, as the skill page prints it; the id is the fallback. */
@@ -1829,7 +2416,7 @@ async function skillRemove(listing, where, quiet, ctx) {
       throw new Refused(
         `${where.dir} holds ${whose(manifest, ctx.folder)}, not ${ctx.pub ? ctx.pub + '/' + ctx.folder : '`' + listing.id + '`'} — `
         + 'a skill of the same name from another publisher. Nothing was deleted. '
-        + (manifest.pub ? `\`mcprush skill remove ${manifest.pub}/${ctx.folder}\` takes that one out, or --force deletes it anyway.`
+        + (manifest.pub ? `\`${NPX} skill remove ${manifest.pub}/${ctx.folder}\` takes that one out, or --force deletes it anyway.`
           : 'Pass --force to delete it anyway.'))
     }
   }
@@ -1898,6 +2485,89 @@ async function bundleBodies(id, plan) {
     out.push(body.toString('utf8'))
   }
   return out
+}
+
+/* THE HEADER A CLIENT READS, READ HERE TOO: the SKILL.md's front matter, `name:` and `description:`,
+   as plain scalars, quoted ones or block scalars; null when the file has none. Enough to say what a
+   client will make of the file, not a YAML parser. */
+function frontMatter(text) {
+  const m = /^﻿?---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(String(text ?? ''))
+  if (!m) return null
+  const lines = m[1].split(/\r?\n/)
+  const out = {}
+  for (let i = 0; i < lines.length; i++) {
+    const kv = /^([A-Za-z_][\w-]*):[ \t]*(.*)$/.exec(lines[i])
+    if (!kv) continue
+    let v = kv[2].trim()
+    if (/^[>|][+-]?\d*$/.test(v)) {
+      const parts = []
+      while (i + 1 < lines.length && (/^\s+\S/.test(lines[i + 1]) || !lines[i + 1].trim())) parts.push(lines[++i].trim())
+      v = (v.startsWith('>') ? parts.join(' ') : parts.join('\n')).trim()
+    } else if (v.startsWith('"')) {
+      try { v = JSON.parse(v) } catch { v = v.replace(/^"|"$/g, '') }
+    } else if (v.startsWith("'")) {
+      v = v.replace(/^'|'$/g, '').replace(/''/g, "'")
+    } else {
+      while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1])) v += ' ' + lines[++i].trim()
+    }
+    if (!Object.hasOwn(out, kv[1])) out[kv[1]] = v
+  }
+  return out
+}
+
+/* WHAT THE CLIENT WILL MAKE OF THE SKILL JUST WRITTEN, said where it would otherwise go unnoticed
+   (test of 29 Sep 2026): Gemini CLI and Grok read a project's skills only in a folder they trust,
+   and skip them in silence elsewhere; Gemini CLI, Codex, Copilot and Grok list a skill by the
+   name its SKILL.md gives it, not by its folder; Copilot in VS Code refuses a description over the
+   Agent Skills limit of 1,024 characters; Claude Code and Gemini CLI skip a SKILL.md with no
+   name and description at its top; and a file the marketplace does not hand out (`missing`: over
+   its size limit, or of a type it does not carry) is named, with where to get it. */
+const SKILL_NAME_CLIENTS = { gemini: 'Gemini CLI', codex: 'Codex', vscode: 'GitHub Copilot in VS Code', grok: 'Grok' }
+function skillNotes(doc, folder, clientId, missing) {
+  const notes = []
+  const global = boolFlag(args.flags, 'global')
+  if (clientId === 'gemini' && !global) {
+    notes.push('Gemini CLI reads project skills only in a folder it trusts: answer Trust when it asks, or run /permissions '
+      + `trust. ~/.gemini/skills/ (the same command with --global) is read in every folder.`)
+  }
+  if (clientId === 'grok' && !global) {
+    notes.push('Grok reads project skills only in a trusted folder: accept its trust prompt, or start it once with grok '
+      + '--trust. ~/.grok/skills/ (the same command with --global) is read in every folder.')
+  }
+  if (typeof doc === 'string') {
+    const head = frontMatter(doc)
+    const name = head && typeof head.name === 'string' ? head.name.trim() : ''
+    const description = head && typeof head.description === 'string' ? head.description.trim() : ''
+    if (!name || !description) {
+      notes.push(`Its SKILL.md has no ${!name && !description ? 'name and description' : !name ? 'name' : 'description'} `
+        + 'at its top, which Claude Code and Gemini CLI need: they skip it until the header is added.')
+    }
+    if (description.length > 1024 && clientId === 'vscode') {
+      notes.push(`Its SKILL.md description is ${description.length.toLocaleString('en-US')} characters: GitHub Copilot in `
+        + 'VS Code refuses skills over the Agent Skills limit of 1,024 characters.')
+    }
+    if (name && name !== folder && Object.hasOwn(SKILL_NAME_CLIENTS, clientId)) {
+      notes.push(`It appears as ${printable(name, 80)} in ${SKILL_NAME_CLIENTS[clientId]} — the name its SKILL.md gives it, not the folder name.`)
+    }
+  }
+  const gone = (Array.isArray(missing) ? missing : []).filter((m) => m && typeof m.path === 'string' && m.path).slice(0, 20)
+  if (gone.length) {
+    const why = (m) => {
+      const size = Number(m.bytes)
+      const mb = Number.isFinite(size) && size > 0 ? `${(size / 1048576).toFixed(1)} MB` : ''
+      /* the marketplace's words (src/api/skill-files.ts): size, type, depth, limit — `limit` is the
+         cap on the number of files, not on a file's size */
+      const w = String(m.why ?? '')
+      if (/^size$|large|big/i.test(w)) return `${mb ? mb + ' — ' : ''}over the marketplace's file size limit`
+      if (/^type$|ext/i.test(w)) return `${(/\.[^./]+$/.exec(m.path) || ['this'])[0]} is not a file type the marketplace hands out`
+      if (/^depth$/i.test(w)) return 'deeper in its folders than the marketplace hands out'
+      if (/^limit$/i.test(w)) return 'past the number of files the marketplace hands out'
+      return printable(w, 80) || 'not handed out'
+    }
+    notes.push(`Not in this download: ${gone.map((m) => `${printable(m.path, 120)} (${why(m)})`).join(', ')} — take `
+      + `${gone.length === 1 ? 'it' : 'them'} from the skill's own source.`)
+  }
+  return notes
 }
 
 async function skillAdd(listing, where, clientId, quiet, ctx = {}) {
@@ -2064,13 +2734,17 @@ async function skillAdd(listing, where, clientId, quiet, ctx = {}) {
 
   const paths = written.map((w) => w.path)
   const executable = written.filter((w) => w.mode).map((w) => w.path)
-  const out = { id: listing.id, name: listing.name, dir: where.dir, files: paths, replaced: there, stale, ...(executable.length ? { executable } : {}), ...(cut || {}) }
+  const doc = plan.indexOf('SKILL.md') >= 0 ? bodies[plan.indexOf('SKILL.md')] : null
+  const notes = skillNotes(doc, ctx.folder || listing.slug || listing.id, clientId, listed.missing)
+  const out = { id: listing.id, name: listing.name, dir: where.dir, files: paths, replaced: there, stale, ...(executable.length ? { executable } : {}), ...(cut || {}),
+    ...(notes.length ? { notes } : {}) }
   if (quiet) return out
   emit({ ok: true, ...out, client: clientId }, () => {
     say(green('✓') + ` ${bold(safe(listing.name))} → ${where.dir}`)
     say(dim(`  ${paths.length} file${paths.length === 1 ? '' : 's'}: ${safe(paths.join(', '))}`))
     if (executable.length) say(dim(`  made executable, as ${executable.length === 1 ? 'it starts' : 'they start'} with #!: ${safe(executable.join(', '))}`))
     if (cutLine) say(red(`  ${cutLine}`))
+    for (const n of notes) say(`  ${said(n)}`)
     if (there) {
       say(dim(`  replaced what was there${state === 'ours' ? '' : state === 'other' ? ` (--force: it was ${safe(whose(manifest, ctx.folder))})` : ' (--force)'}`
         + (stale.length ? `; dropped by this version: ${safe(stale.join(', '))}` : '')))

@@ -443,7 +443,7 @@ test('a write that fails after the install was recorded names the install and th
     const doc = r.json()
     assert.equal(doc.ok, false)
     assert.match(doc.error, /could not be written/)
-    assert.match(doc.error, /already on your account: `mcprush remove late`/)
+    assert.match(doc.error, /already on your account: `npx mcprush@latest remove late`/)
     assert.deepEqual(doc.installed, ['late'])
     assert.equal(installs(m).length, 1)
     chmodSync(dir, 0o755)
@@ -547,7 +547,7 @@ test('add-list: a member the account already held is not named in the undo after
     assert.equal(doc.ok, false)
     assert.match(doc.error, /could not be written/)
     assert.deepEqual(doc.installed, ['fresh'], 'the held member is not named as this run\'s install')
-    assert.match(doc.error, /`mcprush remove fresh`/)
+    assert.match(doc.error, /`npx mcprush@latest remove fresh`/)
     assert.ok(!/remove held/.test(doc.error), 'and the undo never offers to take off what was already there')
   } finally {
     await m.close()

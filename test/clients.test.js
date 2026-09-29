@@ -285,8 +285,10 @@ test('a client this tool does not write is given its own command or snippet, not
     const url = `${m.host}/gw/linear/mcp`
     const expect = {
       codex: `codex mcp add linear --url ${url} --bearer-token-env-var MCPRUSH_KEY`,
-      gemini: `gemini mcp add --scope user --transport http \\\n  -H "Authorization: Bearer $MCPRUSH_KEY" \\\n  linear ${url}`,
-      grok: `grok mcp add --transport http linear ${url} \\\n  --header "Authorization: Bearer $MCPRUSH_KEY"`,
+      /* one line, the header in single quotes: every shell passes it as it is, and the client puts
+         the key in when it connects (I11) */
+      gemini: `gemini mcp add --scope user --transport http -H 'Authorization: Bearer \${MCPRUSH_KEY}' linear ${url}`,
+      grok: `grok mcp add --transport http linear ${url} --header 'Authorization: Bearer \${MCPRUSH_KEY}'`,
       openai: `[mcp_servers.linear]\nurl = "${url}"\nhttp_headers = { Authorization = "Bearer mk_test_key" }`,
       deepseek: '- insert:\n    - id: mcp-linear\n',
       copilot: url,
@@ -343,23 +345,81 @@ test('skills: the Agents SDK reads no folder even where the table names one, and
     assert.equal(agents.code, 1, agents.out)
     assert.equal(ROWS.find((r) => r.id === 'agents').skillsDir, '.claude/skills/', 'the table still names the Claude Agent SDK\'s folder')
     assert.match(agents.json().error, /OpenAI Agents SDK reads no skills folder/)
-    assert.match(agents.json().error, /mkdir -p skills && curl -fsSL \S+\/api\/skills\/sk_demo\/bundle\.tar\.gz \| tar -xz -C skills/)
+    /* the archive as a file, then tar: a pipe into tar exits 0 on a 401 — and no `mkdir -p skills &&`,
+       which PowerShell's mkdir stops at the second time (I09) */
+    assert.match(agents.json().error, /curl -fsSL --create-dirs -o skills\/demo\.tar\.gz \S+\/api\/skills\/sk_demo\/bundle\.tar\.gz && tar -xzf skills\/demo\.tar\.gz -C skills && rm skills\/demo\.tar\.gz && echo "Installed skills\/demo"/)
+    assert.ok(!/\| tar|mkdir -p/.test(agents.json().error), 'no pipe into tar, no mkdir')
+    assert.ok(!/PowerShell/.test(agents.json().error), 'no PowerShell line off Windows')
     assert.ok(!existsSync(join(home, '.claude')), 'no .claude/skills/ in the project')
+    const api = await run(m.host, home, ['skill', 'add', 'acme/demo', '--client', 'api', '--json'], { noKey: true })
+    assert.equal(api.code, 1)
+    assert.match(api.json().error, /put the SKILL\.md inside it into the prompt/)
+    /* on Windows, the same with curl.exe and tar.exe, after the POSIX line */
+    const win = await run(m.host, home, ['skill', 'add', 'acme/demo', '--client', 'agents', '--json'], { noKey: true, env: WIN32 })
+    /* each line on a line of its own, so that a triple click copies the command and nothing else */
+    assert.match(win.json().error, /read from the file\.\n {2}curl -fsSL [^\n]+ && echo "Installed skills\/demo"\n {2}in PowerShell:\n {2}curl\.exe -fsSL --create-dirs -o skills\/demo\.tar\.gz \S+\/bundle\.tar\.gz; if \(\$\?\) \{ tar -xzf skills\/demo\.tar\.gz -C skills; if \(\$\?\) \{ Remove-Item skills\/demo\.tar\.gz; "Installed skills\/demo" \} \}$/)
+    assert.ok(!m.seen.some((s) => s.url.startsWith('/api/skills/')), 'nothing was fetched for a client that reads no folder and uploads nothing')
+  })
+})
 
-    const says = {
-      openai: [/Skills → Create → Upload from your computer/, /bundle\.zip\?in=folder/],
-      perplexity: [/Skills → Create skill → Upload a skill/, /bundle\.zip\?in=folder/],
-      copilot: [/Build → Skills → Add skill → Upload a skill/, /bundle\.zip — /],
-      claude: [/Customize › Skills › \+ › Create skill › Upload a skill/, /code execution and file creation/],
-      api: [/put the SKILL\.md inside it into the prompt/, /tar -xz -C skills/],
-    }
-    for (const [client, [a, b]] of Object.entries(says)) {
+/* I09: A CLIENT THAT TAKES A SKILL AS AN UPLOAD GETS THE ZIP, saved here — the folder inside it for
+   Claude Desktop, ChatGPT and Perplexity, SKILL.md at its root for Copilot Studio — with where it goes */
+test('skills: Claude Desktop, ChatGPT, Copilot and Perplexity get the zip they upload, saved in this folder', async () => {
+  const zip = (tag) => Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from(tag.padEnd(40, '.'))])
+  const says = {
+    openai: /Skills → Create → Upload from your computer/,
+    perplexity: /Skills → Create skill → Upload a skill/,
+    copilot: /Build → Skills → Add skill → Upload a skill/,
+    claude: /Customize › Skills › \+ › Create skill › Upload a skill/,
+  }
+  await withMarket({
+    '/api/skills/sk_demo/bundle.zip': (req) => zip(req.url.includes('in=folder') ? 'folder' : 'root'),
+  }, async (m, home) => {
+    for (const [client, how] of Object.entries(says)) {
       const r = await run(m.host, home, ['skill', 'add', 'acme/demo', '--client', client, '--json'], { noKey: true })
-      assert.equal(r.code, 1, client)
-      assert.match(r.json().error, a, client)
-      assert.match(r.json().error, b, client)
+      assert.equal(r.code, 0, `${client}: ${r.out}`)
+      const doc = r.json()
+      assert.equal(doc.file, join(realpathSync(home), 'demo.zip'))
+      assert.match(doc.upload, how, client)
+      const body = readFileSync(join(home, 'demo.zip'))
+      assert.equal(body.readUInt32LE(0), 0x04034b50)
+      assert.ok(body.includes(client === 'copilot' ? 'root' : 'folder'), `${client}: the zip that client wants`)
+      /* the same zip again is no change; another one is refused without --force */
+      const again = await run(m.host, home, ['skill', 'add', 'acme/demo', '--client', client], { noKey: true })
+      assert.equal(again.code, 0, again.err)
+      assert.match(again.out, /the same zip as the one already there/)
+      rmSync(join(home, 'demo.zip'))
     }
-    assert.ok(!m.seen.some((s) => s.url.startsWith('/api/skills/')), 'nothing was fetched for a client with no folder')
+    writeFileSync(join(home, 'demo.zip'), 'mine')
+    const theirs = await run(m.host, home, ['skill', 'add', 'acme/demo', '--client', 'claude'], { noKey: true })
+    assert.equal(theirs.code, 1)
+    assert.match(theirs.err, /demo\.zip exists and is not this zip\. Nothing was saved/)
+    assert.equal(readFileSync(join(home, 'demo.zip'), 'utf8'), 'mine')
+    const forced = await run(m.host, home, ['skill', 'add', 'acme/demo', '--client', 'claude', '--force'], { noKey: true })
+    assert.equal(forced.code, 0, forced.err)
+    assert.match(forced.out, /replacing the one that was there/)
+    /* a dry run saves nothing */
+    rmSync(join(home, 'demo.zip'))
+    const dry = await run(m.host, home, ['skill', 'add', 'acme/demo', '--client', 'perplexity', '--dry-run'], { noKey: true })
+    assert.equal(dry.code, 0, dry.err)
+    assert.ok(!existsSync(join(home, 'demo.zip')))
+    assert.ok(!existsSync(join(home, '.claude')), 'no folder in the project')
+  })
+  /* a body that is not a zip is not saved under a .zip name, and a refusal says why and saves nothing */
+  await withMarket({
+    '/api/skills/sk_demo/bundle.zip': () => status(403, { safe: true, error: 'This skill is paid, and this account has not bought it.', checkout: 'https://mcprush.com/checkout?skill=sk_demo' }),
+  }, async (m, home) => {
+    const r = await run(m.host, home, ['skill', 'add', 'acme/demo', '--client', 'openai', '--json'])
+    assert.equal(r.code, 1)
+    assert.match(r.json().error, /has not bought it\. Nothing was saved\./)
+    assert.equal(r.json().checkout, 'https://mcprush.com/checkout?skill=sk_demo')
+    assert.ok(!existsSync(join(home, 'demo.zip')))
+  })
+  await withMarket({ '/api/skills/sk_demo/bundle.zip': () => '<html>sign in</html>' }, async (m, home) => {
+    const r = await run(m.host, home, ['skill', 'add', 'acme/demo', '--client', 'openai'], { noKey: true })
+    assert.equal(r.code, 1)
+    assert.match(r.err, /not a zip, so nothing was saved/)
+    assert.ok(!existsSync(join(home, 'demo.zip')))
   })
 })
 

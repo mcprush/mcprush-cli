@@ -51,9 +51,20 @@ A **stack** is a curated set of listings, and most of its members are
 package, a docker image, a publisher's own address — which your client starts
 itself, with this marketplace nowhere in the path. `stack add` writes those
 into the client's config as the entry the listing page prints (`npx -y <pkg>`,
-`uvx <pkg>`, `docker run -i --rm <image>`, or the address with its transport),
-with no key of ours in them, and prints the line the client will run beside
-each one — read off the entry written. A variable the marketplace marks as
+`npx -y --package=<pkg> <program>`, `uvx <pkg>`, `docker run -i --rm <image>`,
+or the address with its transport), with no key of ours in them, and prints the
+line the client will run beside each one — read off the entry written. `add`
+does the same for a single direct server, so `npx mcprush@latest add <server>`
+works for the whole catalogue and not only for the servers behind the gateway:
+nothing is installed on the account, and no key is needed. Where the
+marketplace says the launcher needs options of its own, they go before the
+package — `uvx --with 'mcp<2' <pkg>` for a Python server that breaks under mcp
+2.x, `docker run -i --rm --platform linux/amd64 -v <volume>:/data <image>` for
+an image published for amd64 only or one that keeps its data in a volume. A
+package that serves HTTP rather than stdio is written as the address it listens
+on (`http://localhost:<port>/…`), and the line that starts it is printed for
+you to run in a terminal of its own; a server that needs a step once before its
+first start — a sign-in, an `init` — has that line printed as "run once first". A variable the marketplace marks as
 required goes into the entry as `<your value>`, and you are told to set it; one
 it does not mark as required is listed as "may need" and left out of the entry,
 so the server starts on its own default. A name that steers the launcher or the
@@ -75,7 +86,13 @@ the reason there is none, and its page, so you can set it up by hand.
   itself. What goes into such an entry is bounded: a package name follows its
   registry's grammar (npm's `[@scope/]name[@version]`, a PyPI name) — no URL,
   git or `file:` spec, no `user/repo` shorthand — an image name is one token
-  with no scheme, and an address is https with no credentials in it. `skill add` downloads text files and writes
+  with no scheme, and an address is https with no credentials in it (plain
+  http only for a server on this machine). The launcher's own options are held
+  to the few a listing needs: `--with <requirement>` and `--python <version>`
+  for uvx, `--platform`, `-v <named volume or placeholder>:/<path>`, `-p` and
+  `-e NAME=value` for docker — never a URL to fetch from, a path on your disk
+  the marketplace chose, a variable of yours handed to the container, or
+  anything that widens what a container may do. `skill add` downloads text files and writes
   them — it does not execute them, and it refuses any file path that would
   land outside the skill's own folder.
 - **It never rewrites a config file it could not parse.** If your config has
@@ -93,9 +110,10 @@ the reason there is none, and its page, so you can set it up by hand.
   are gateway entries — an address at the marketplace with your key beside it.
   `add`, `add-list` and `stack add` refuse a name that already holds anything
   else, before anything is installed (`stack add`, whose route installs as it
-  resolves, leaves that member out and names it); a direct member is rewritten
-  only when it is the entry the run would write or the one 0.1.4 wrote for it,
-  and one you filled in is kept as it is. `remove` asks the account first — a monthly install the
+  resolves, leaves that member out and names it); a direct entry is rewritten
+  only when it is the entry the run would write or one an earlier version wrote
+  for it, and one you filled in is kept as it is — and told what it lacks, when
+  an earlier version wrote it without something the server needs. `remove` asks the account first — a monthly install the
   marketplace will not cancel from a terminal keeps its entry — and takes out
   only an entry of its own. `--force` overrides either, and says so.
 
@@ -119,12 +137,12 @@ keeps no copy.
 
 | | |
 |---|---|
-| `mcprush login` | hold a key: asked for without echo, or piped in (`printf %s "$KEY" \| mcprush login`) — with no terminal the first line of stdin is the key, and a stdin that sends nothing for 5 seconds is given up on; it is checked before it is stored, and `--dry-run` checks without storing. `login <key>` works but leaves the key in shell history. A login without `--host` drops a host an earlier `--host` pinned |
-| `mcprush add <server> [<server> …]` | install and write the client entry; the key from the card or the page's `<publisher>/<slug>` |
-| `mcprush remove <server>` | take it off the account and out of the client, by either spelling; only an entry this tool wrote, unless `--force`. An install holding variables you set is taken off only with a write key — a read-only key is refused and the file is left as it was |
-| `mcprush skill add <skill>` | write a skill's folder to disk, fetched in one request (the marketplace's `bundle.tar.gz`; file by file only when that fails); a folder you changed is replaced only with `--force` |
+| `mcprush login` | hold a key: asked for without echo, or piped in (`printf %s "$MCPRUSH_KEY" \| npx mcprush@latest login`) — with no terminal the first line of stdin is the key, and a stdin that sends nothing for 5 seconds is given up on; it is checked before it is stored, and `--dry-run` checks without storing. `login <key>` works but leaves the key in shell history. A login without `--host` drops a host an earlier `--host` pinned |
+| `mcprush add <server> [<server> …]` | install and write the client entry; the key from the card or the page's `<publisher>/<slug>`. A server behind the gateway is installed on the account; one the client starts itself, or dials at its publisher's address, is written as the entry its page prints, with no key and nothing on the account. A paid one stops with its price and the checkout link |
+| `mcprush remove <server>` | take it off the account and out of the client, by either spelling; only an entry this tool wrote — or the one it writes for a direct server, which needs no key — unless `--force`. An install holding variables you set is taken off only with a write key — a read-only key is refused and the file is left as it was |
+| `mcprush skill add <skill>` | write a skill's folder to disk, fetched in one request (the marketplace's `bundle.tar.gz`; file by file only when that fails); a folder you changed is replaced only with `--force`. For Claude Desktop, ChatGPT, Copilot and Perplexity, save the zip that client uploads instead |
 | `mcprush skill remove <skill>` | delete what `skill add` wrote and keep what you added; no key needed |
-| `mcprush stack add <stack>` | install a curated set: gateway members through the gateway, direct ones as the command or address the client starts |
+| `mcprush stack add <stack>` | install a curated set: gateway members through the gateway, direct ones as the command or address the client starts. For a client this tool does not write (Codex, Gemini CLI, Grok Build, ChatGPT, Copilot, Perplexity, DeepSeek, the Agents SDK, an API call) it writes nothing, prints each member in that client's own form to paste, and exits 1. Direct members need no key; a gateway member does |
 | `mcprush add-list <list>` | install one of your saved lists |
 | `mcprush budget [--max --alert]` | the account's monthly ceiling: checked when a subscription is bought, refusing an order that would pass it. Calls are limited by each install's own allowance, not by this figure. Owner or billing manager only; `--max` and `--alert` also need a write key — and a key you log in with is the one `add` writes into your clients, so Dashboard → Limits is the simpler place to change it |
 | `mcprush list` | what this account has installed |
@@ -177,14 +195,23 @@ Devin Desktop, an install from `--client devin` is filed there under `windsurf`.
 For the other clients, which this tool does not write, `mcprush add <server>
 --client <id>` installs the server and prints that client's own way of adding
 it: `codex mcp add … --bearer-token-env-var MCPRUSH_KEY` for Codex CLI,
-`gemini mcp add --scope user --transport http -H …` for Gemini CLI,
-`grok mcp add --transport http … --header …` for Grok Build, the
+`gemini mcp add --scope user --transport http -H 'Authorization: Bearer ${MCPRUSH_KEY}' …`
+for Gemini CLI, `grok mcp add --transport http … --header 'Authorization: Bearer ${MCPRUSH_KEY}'`
+for Grok Build — one line, the header in single quotes so that every shell,
+PowerShell included, passes it as it is and the client reads `MCPRUSH_KEY` when
+it connects — the
 `[mcp_servers.<id>]` block with `http_headers` in `~/.codex/config.toml` for the
 ChatGPT desktop app, a `- insert:` row for the DeepSeek Harness, the address and
 where it goes for Copilot Studio and Perplexity, the Python for the OpenAI Agents
-SDK, and a `curl` for a bare API call — the same forms the site prints. `--json`
-carries that form as `setup`, beside the address and the header; `stack add` and
-`add-list` print the address beside each member.
+SDK, and a `curl` for a bare API call — the same forms the site prints. Where a
+line does not survive PowerShell — `--env K="$K"` for Codex, where `$K` is
+PowerShell's own empty variable, or the `curl` — a second line for PowerShell is
+printed after it on Windows (`--env K="$env:K"`, `Invoke-RestMethod`), and a
+bare `--` is written `'--'` for Grok and Gemini CLI, whose npm wrappers lose it
+in PowerShell. An SSE server goes into Codex and Grok Build through `mcp-remote`,
+since both dial an address over Streamable HTTP only.
+`--json` carries that form as `setup` (and `powershell`), beside the address and
+the header; `stack add` and `add-list` print the address beside each member.
 
 **Claude Desktop starts local processes and nothing else** — its
 `claude_desktop_config.json` has no entry for a remote address — so its entry
@@ -222,15 +249,27 @@ for Devin Desktop and Windsurf, which read no `~/.github/skills/` or
 a restart; in Gemini CLI, `/skills reload` does it for a session already running.
 
 Claude Desktop, ChatGPT, Copilot, Perplexity, the OpenAI Agents SDK and a bare
-API read no skills folder from disk, and `skill add` for them writes nothing and
-says how that client takes a skill — for Claude Desktop, a zip from
-`/api/skills/<id>/bundle.zip?in=folder`, uploaded under Customize › Skills › + ›
-Create skill › Upload a skill (code execution and file creation has to be on;
+API read no skills folder from disk. For the four that take a skill as an
+upload, `skill add` saves the zip that client wants into the folder you run it
+in, as `<slug>.zip` — a paid one against your key — and says where it goes: for
+Claude Desktop the folder inside the zip, uploaded under Customize › Skills › +
+› Create skill › Upload a skill (code execution and file creation has to be on;
 on Team and Enterprise an owner turns on both it and Skills under Organization
-settings › Plugins & skills); for ChatGPT and
-Perplexity the same zip, for Copilot Studio one with `SKILL.md` at its root, and
-for the Agents SDK or an API call the folder unpacked with `curl … | tar` and its
-`SKILL.md` handed to the model by your code. A client neither table knows gets
+settings › Plugins & skills); for ChatGPT and Perplexity the same zip, for
+Copilot Studio one with `SKILL.md` at its root. A zip already there is replaced
+only with `--force`, unless it is the same one. For the Agents SDK or an API
+call it writes nothing and prints the line that downloads the folder with `curl`
+and unpacks it with `tar` into `skills/` (on Windows, a second line with
+`curl.exe` and `tar.exe` for PowerShell), for your code to hand its `SKILL.md`
+to the model.
+
+After a skill is written, what the client will make of it is said where it
+would otherwise go unnoticed: that Gemini CLI and Grok read a project's skills
+only in a folder they trust, that Gemini CLI, Codex, Copilot and Grok list the
+skill by the name its `SKILL.md` gives it rather than by its folder, that
+Copilot in VS Code refuses a description over 1,024 characters, that a
+`SKILL.md` with no name and description at its top is skipped, and which files
+the marketplace did not hand out. A client neither table knows gets
 `./skills/<name>` and is told so plainly.
 
 The marketplace can name that folder — a client changes where it looks, and the
@@ -257,7 +296,7 @@ No dependencies and no build step: the files in `bin/` and `lib/` are what
 ships.
 
 ```sh
-npm test                 # 143 tests, node:test, no runner to install
+npm test                 # 160 tests, node:test, no runner to install
 npm pack --dry-run       # what would go to the registry
 node bin/mcprush.js --help
 ```

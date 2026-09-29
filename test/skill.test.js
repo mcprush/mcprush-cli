@@ -169,6 +169,50 @@ test('a file the marketplace cannot serve leaves nothing on disk, and the refusa
     await m.close()
     rmSync(home, { recursive: true, force: true })
   }
+
+  /* [13] WHAT A LISTING IS, BEFORE A KEY IS ASKED FOR. Without a key a paid skill was "This
+     needs a key from your account", and a server asked for as a skill the same: the person
+     minted a key to learn the one is sold and the other is not a skill. The marketplace answers
+     both without a key now; an older one still answers 401, and that is the old sentence. */
+  const home2 = scratch('mcprush-skill-')
+  const m2 = await marketplace((req) => {
+    const path = req.url.split('?')[0]
+    if (path === '/api/cli/clients') return { gateway: 'x', rows: CLIENT_ROWS }
+    if (path === '/api/cli/listing/pro') {
+      return { id: 'sk_pro', name: 'Pro', kind: 'skill', status: 'live', free: false, priceType: 'sub', amountCents: 900, installed: false,
+        slug: 'pro', page: 'https://mcprush.com/acme/pro', checkout: 'https://mcprush.com/checkout?skill=sk_pro' }
+    }
+    if (path === '/api/cli/listing/chrome-devtools-mcp') {
+      return { id: 'chrome-devtools-mcp', name: 'Chrome DevTools', kind: 'server', status: 'live', free: true, delivery: 'direct', local: false,
+        ready: false, slug: 'chrome-devtools-mcp', page: 'https://mcprush.com/chromedevtools/chrome-devtools-mcp' }
+    }
+    if (path === '/api/cli/listing/old') return status(401, { safe: true, error: 'This needs a key from your account.' })
+    return status(404, { error: 'There is no endpoint at that address.' })
+  })
+  try {
+    const paid = await run(m2.host, home2, ['skill', 'add', 'acme/pro', '--json'], { noKey: true })
+    assert.equal(paid.code, 1)
+    const doc = paid.json()
+    assert.match(doc.error, /^Pro is a paid skill \(\$9 a month\)\. Buy it at the checkout link below, then run `npx mcprush@latest login`/)
+    assert.equal(doc.checkout, 'https://mcprush.com/checkout?skill=sk_pro')
+    assert.equal(doc.how, `${m2.host}/dashboard#access`)
+    assert.ok(!m2.seen.some((x) => x.url.startsWith('/api/skills/')), 'no folder was asked for')
+    assert.equal(m2.seen.find((x) => x.url.startsWith('/api/cli/listing/pro')).auth, null)
+
+    const srv = await run(m2.host, home2, ['skill', 'add', 'chromedevtools/chrome-devtools-mcp'], { noKey: true })
+    assert.equal(srv.code, 1)
+    assert.match(srv.err, /Chrome DevTools is an MCP server, not a skill/)
+    assert.match(srv.err, /Use `npx mcprush@latest add chromedevtools\/chrome-devtools-mcp`/)
+    assert.ok(!/No key held/.test(srv.err))
+
+    const old = await run(m2.host, home2, ['skill', 'add', 'old'], { noKey: true })
+    assert.equal(old.code, 1)
+    assert.match(old.err, /No key held yet\. Run `npx mcprush@latest login`/)
+    assert.ok(!existsSync(join(home2, '.claude', 'skills')))
+  } finally {
+    await m2.close()
+    rmSync(home2, { recursive: true, force: true })
+  }
 })
 
 test('several skills, the bare id, and a client the marketplace names', async () => {
