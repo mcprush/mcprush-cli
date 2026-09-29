@@ -11,7 +11,7 @@ import { marketplace, run, scratch, status, CLIENT_ROWS } from './harness.js'
 /* a marketplace holding one free skill, acme/demo, whose files can be switched between runs */
 function catalogue(files, opts = {}) {
   return (req) => {
-    if (req.url === '/api/cli/listing/demo?pub=acme' || req.url === '/api/cli/listing/sk_demo') {
+    if (req.url === '/api/cli/listing/demo?pub=acme' || req.url.split('?')[0] === '/api/cli/listing/sk_demo') {
       return { id: 'sk_demo', name: 'Demo', kind: 'skill', status: 'live', version: opts.version ?? '1.0.0', free: true, slug: 'demo', page: 'https://mcprush.com/skills/acme/demo' }
     }
     if (req.url === '/api/cli/clients') return { gateway: 'x', rows: CLIENT_ROWS }
@@ -256,6 +256,62 @@ test('a file name the disk will not take is a refusal, not a stack trace, and le
     assert.match(r.json().error, /could not be written under .* \(ENAMETOOLONG\)\. Nothing was written\./)
     assert.ok(!existsSync(join(home, '.claude', 'skills', 'demo')))
     assert.deepEqual(readdirSync(join(home, '.claude', 'skills')), [], 'no temporary folder either')
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('skill add asks for a skill: a name several publishers use is listed and nothing is written, and a server key is still said to be a server', async () => {
+  const home = scratch('mcprush-skill-')
+  const LIST = 'More than one publisher lists a skill called knowledge-capture, so nothing was picked. Name the one you mean:\n'
+    + '  composiohq/knowledge-capture — from github.com/composiohq/awesome-codex-skills\n'
+    + '  makenotion/knowledge-capture — from github.com/makenotion/claude-code-notion-plugin'
+  const HOW = 'Run the same command with the full name, for example composiohq/knowledge-capture. All of them: https://mcprush.com/skills?q=knowledge-capture'
+  const skills = catalogue(V1)
+  const m = await marketplace((req) => {
+    const [path, query] = req.url.split('?')
+    if (path === '/api/cli/listing/knowledge-capture') {
+      return status(422, { safe: true, ambiguous: true, error: LIST, how: HOW, name: 'knowledge-capture', kind: 'skill',
+        candidates: [{ ref: 'composiohq/knowledge-capture', id: 'knowledge-capture', kind: 'skill', holdsName: true },
+          { ref: 'makenotion/knowledge-capture', id: 'makenotion-knowledge-capture', kind: 'skill', holdsName: false }] })
+    }
+    /* a server holds the key, and no skill answers to the name */
+    if (path === '/api/cli/listing/chrome-devtools-mcp') {
+      return query === 'kind=skill'
+        ? status(404, { safe: true, error: 'There is no listing called chrome-devtools-mcp.' })
+        : { id: 'chrome-devtools-mcp', name: 'Chrome DevTools', kind: 'server', status: 'live', free: true, delivery: 'direct', local: false,
+          ready: false, slug: 'chrome-devtools-mcp', ref: 'async23/chrome-devtools-mcp', page: 'https://mcprush.com/async23/chrome-devtools-mcp' }
+    }
+    return skills(req)
+  })
+  const lookups = (name) => m.seen.filter((s) => s.url.split('?')[0] === '/api/cli/listing/' + name).map((s) => s.url)
+  try {
+    const r = await run(m.host, home, ['skill', 'add', 'sk_demo', '--json'], { noKey: true })
+    assert.equal(r.code, 0, r.err + r.out)
+    assert.deepEqual(lookups('sk_demo'), ['/api/cli/listing/sk_demo?kind=skill'])
+
+    const k = await run(m.host, home, ['skill', 'add', 'knowledge-capture'], { noKey: true })
+    assert.equal(k.code, 1)
+    assert.ok(k.err.includes('• ' + LIST + '\n  ' + HOW + '\n'), k.err)
+    assert.ok(!existsSync(join(home, '.claude', 'skills', 'knowledge-capture')), 'no folder')
+    assert.ok(!m.seen.some((s) => s.url.startsWith('/api/skills/knowledge-capture')), 'no file was asked for')
+    const kj = await run(m.host, home, ['skill', 'add', 'knowledge-capture', '--json'], { noKey: true })
+    assert.equal(kj.json().status, 422)
+    assert.equal(kj.json().ambiguous, true)
+    assert.deepEqual(kj.json().candidates.map((c) => c.ref), ['composiohq/knowledge-capture', 'makenotion/knowledge-capture'])
+    assert.deepEqual(lookups('knowledge-capture'), ['/api/cli/listing/knowledge-capture?kind=skill', '/api/cli/listing/knowledge-capture?kind=skill'])
+
+    const s = await run(m.host, home, ['skill', 'add', 'chrome-devtools-mcp'], { noKey: true })
+    assert.equal(s.code, 1)
+    assert.match(s.err, /Chrome DevTools is an MCP server, not a skill[\s\S]*Use `npx mcprush@latest add async23\/chrome-devtools-mcp`/)
+    assert.deepEqual(lookups('chrome-devtools-mcp'), ['/api/cli/listing/chrome-devtools-mcp?kind=skill', '/api/cli/listing/chrome-devtools-mcp'])
+
+    /* skill remove of a bare name asks as before: its folder decides, not the answer */
+    const rm = await run(m.host, home, ['skill', 'remove', 'sk_demo', '--json'], { noKey: true })
+    assert.equal(rm.code, 0, rm.err + rm.out)
+    assert.equal(lookups('sk_demo').at(-1), '/api/cli/listing/sk_demo')
+    assert.ok(!existsSync(join(home, '.claude', 'skills', 'demo', 'SKILL.md')))
   } finally {
     await m.close()
     rmSync(home, { recursive: true, force: true })

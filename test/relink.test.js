@@ -203,7 +203,7 @@ test('K24: an archive that does not come back, or lacks a file, falls back to fe
 
 test('CA-5: remove takes out the entry of a frozen listing the account no longer holds', async () => {
   await withMarket((m) => (req) => {
-    if (req.url === '/api/cli/listing/cold') return status(409, { safe: true, error: 'Cold is frozen while a report about it is read.' })
+    if (req.url.split('?')[0] === '/api/cli/listing/cold') return status(409, { safe: true, error: 'Cold is frozen while a report about it is read.' })
     if (req.url === '/api/cli/uninstall') return status(404, { safe: true, error: 'cold is not installed on this account.' })
     if (req.url === '/api/cli/clients') return { gateway: m.host, rows: CLIENT_ROWS }
     return status(404, { error: 'no' })

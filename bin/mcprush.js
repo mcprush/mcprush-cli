@@ -125,10 +125,11 @@ const emit = (obj, human) => {
   else human()
 }
 
-/* the addresses a refusal carries, for the failed[] rows of a batch: only the ones it has */
+/* the addresses a refusal carries, for the failed[] rows of a batch: only the ones it has — and,
+   for a name more than one publisher uses, the candidates the marketplace named (lib/api.js) */
 const extrasOf = (err) => {
   const out = {}
-  for (const k of ['checkout', 'where', 'how', 'status', 'retryAfterSeconds']) if (err && err[k] !== undefined && err[k] !== null && err[k] !== '') out[k] = err[k]
+  for (const k of ['checkout', 'where', 'how', 'status', 'retryAfterSeconds', 'ambiguous', 'candidates']) if (err && err[k] !== undefined && err[k] !== null && err[k] !== '') out[k] = err[k]
   return out
 }
 /* one refusal inside a batch, with its addresses under it, as the top-level catch prints one */
@@ -854,6 +855,52 @@ function directRefused(listing, src, d) {
     { ...(d.start ? { start: d.start } : {}) })
 }
 
+/* WHOSE LISTING WENT IN, SAID ON THE TICK. A name is unique only inside its publisher, and `add
+   chrome-devtools-mcp` put in @async23's copy of Google's server under a tick that read as Google's.
+   The marketplace names the `<publisher>/<slug>` it resolved to (`ref`); an older one is read from
+   the page address, whose last two segments are the same thing. Held to the shape parseRef takes,
+   so that what is printed can be typed back. */
+const REF = /^[A-Za-z0-9._@-]{1,80}\/[A-Za-z0-9._@-]{1,80}$/
+function refOf(listing) {
+  if (listing && typeof listing.ref === 'string' && REF.test(listing.ref)) return listing.ref
+  try {
+    const seg = new URL(String(listing && listing.page)).pathname.split('/').filter(Boolean).slice(-2).map(decodeURIComponent)
+    return seg.length === 2 && REF.test(seg.join('/')) ? seg.join('/') : null
+  } catch {
+    return null
+  }
+}
+const refShown = (d) => (d && d.ref ? ` (${safe(d.ref)})` : '')
+
+/* A BARE NAME THAT WAS NOT A KEY. A name nobody holds as a key resolves to the one listing that
+   answers to it — by its slug, or by its npm or PyPI name — and the marketplace says which
+   (`matched`). Said under the tick, so that a person who typed a package name reads whose listing
+   it turned out to be. */
+function foundBy(asked, listing, ref) {
+  const how = listing && listing.matched
+  if (how !== 'name' && how !== 'package') return null
+  const src = listing.source && typeof listing.source === 'object' ? String(listing.source.kind || '') : ''
+  const what = how === 'name' ? 'the name' : `the ${src === 'npm' ? 'npm' : src === 'pypi' ? 'PyPI' : 'package'} name`
+  return `\`${asked}\` is ${what} of ${ref || listing.id} — the only listing that answers to it`
+}
+
+/* KIND= AND A NAME ONLY THE OTHER KIND ANSWERS TO. `add` and `skill add` say which kind they ask
+   for (listingRef). mcprush.com answers a name nothing of that kind answers to as it would without
+   `kind` — the other kind's listing, or the list when several publishers use the name — and the
+   caller refuses the other kind with its own sentence, as 0.2.2 did. A marketplace that answers
+   such a name 404 instead is asked once more the way 0.2.2 asked it, and only a listing of the
+   other kind is taken from that answer, for the same refusal: nothing is installed from it. */
+async function resolveAs(name, kind) {
+  try {
+    return await api.listingRef(name, { kind })
+  } catch (err) {
+    if (!(err instanceof Refused) || err.status !== 404 || parseRef(name).pub) throw err
+    const other = await api.listingRef(name).catch(() => null)
+    if (other && typeof other.kind === 'string' && other.kind !== kind) return other
+    throw err
+  }
+}
+
 /* `mcprush add` takes a list of names, because that is what a purchase receipt prints. A
    refusal on one name leaves the rest installed and sets a non-zero exit code. The client
    config is written once for the whole command: N writes are N chances to half rewrite it. */
@@ -902,15 +949,19 @@ async function add() {
   const direct = []
   const failed = []
   const resolved = new Set()
+  /* the line under a tick for a name that was not a key (foundBy), by the row it belongs to */
+  const found = new Map()
 
   for (const name of names) {
     try {
       /* Both forms of the name resolve: the card prints the key, the page `<publisher>/<slug>`. */
-      const listing = await keyless(() => api.listingRef(name))
+      const listing = await keyless(() => resolveAs(name, 'server'))
+      const ref = refOf(listing)
+      const note = foundBy(name, listing, ref)
       if (listing.kind === 'skill') {
         throw new Refused(
           `${listing.name} is an agent skill, not a server: it is a folder of instructions your client reads, `
-          + `and there is nothing to route. Write it to disk with \`${NPX} skill add ${name}\`.`
+          + `and there is nothing to route. Write it to disk with \`${NPX} skill add ${ref || name}\`.`
           + `\n  ${listing.page}`)
       }
       /* NOT BEHIND THE GATEWAY IS NOT "NOT READY YET". A server connected straight to its
@@ -934,12 +985,14 @@ async function add() {
           /* a package gone from its registry has no line, whatever line the marketplace built for it */
           start: typeof listing.start === 'string' && listing.start && !(src && sourceGone(src)) ? listing.start : null,
           page: typeof listing.page === 'string' && listing.page ? listing.page : null,
+          ...(ref ? { ref } : {}),
         }, listing.needs, client, clientId, bucket)
         if (d.key && resolved.has(d.key)) continue
         if (d.conflict) throw new Refused(foreign(client, d.key, 'Nothing was written for it.'))
         if (!d.written && !d.kept && !d.setup) throw directRefused(listing, src, d)
         resolved.add(d.key)
         direct.push(d)
+        if (note) found.set(d, note)
         continue
       }
       if (listing.status !== 'live') {
@@ -987,8 +1040,8 @@ async function add() {
          prints the address beside the key. */
       const url = checkedUrl(installed.url) || listedAt
 
-      done.push({
-        id: entryKey, name: listing.name, url,
+      const row = {
+        id: entryKey, ...(ref ? { ref } : {}), name: listing.name, url,
         replaced: !!bucket && Object.hasOwn(bucket, entryKey),
         forced: !!bucket && FORCE && Object.hasOwn(bucket, entryKey) && !ownEntry(bucket[entryKey]),
         /* the account already held it: the route answers `unchanged`, and a dry run has the listing's word */
@@ -996,7 +1049,9 @@ async function add() {
         surface: installed.surface || null,
         /* Without these the first call fails on authorisation, with no address to fix it at. */
         variables: installed.variables || null,
-      })
+      }
+      done.push(row)
+      if (note) found.set(row, note)
     } catch (err) {
       if (single) throw err
       failed.push({ name, error: err?.message || String(err), ...extrasOf(err) })
@@ -1043,7 +1098,8 @@ async function add() {
       failed,
     }, () => {
       for (const d of done) {
-        say(green('✓') + ` ${safe(d.name)} is ${d.unchanged ? 'already ' : ''}installed on this account.`)
+        say(green('✓') + ` ${safe(d.name)}${refShown(d)} is ${d.unchanged ? 'already ' : ''}installed on this account.`)
+        if (found.has(d)) say(dim(`  ${safe(found.get(d))}`))
         /* THE CLIENT'S OWN COMMAND, NOT A URL AND A HEADER (lib/byhand.js). The key is printed
            whole where the form needs it and the shell does not already hold it: it is the
            reader's own, and pasting it is the point of this branch. */
@@ -1144,11 +1200,11 @@ async function add() {
     ok: !failed.length,
     /* one name — the old shape of the reply, which scripts and scripts/check-cli.mjs read */
     ...(single && done.length
-      ? { id: done[0].id, url: done[0].url, replaced: done[0].replaced, unchanged: done[0].unchanged }
+      ? { id: done[0].id, ...(done[0].ref ? { ref: done[0].ref } : {}), url: done[0].url, replaced: done[0].replaced, unchanged: done[0].unchanged }
       : {}),
     /* and for a direct server, the line it starts with and what it needs, as its refusal carried them */
     ...(one
-      ? { id: one.key, start: one.local ? one.serve : one.line, replaced: !!one.replaced, ...(one.needs ? { needs: one.needs } : {}) }
+      ? { id: one.key, ...(one.ref ? { ref: one.ref } : {}), start: one.local ? one.serve : one.line, replaced: !!one.replaced, ...(one.needs ? { needs: one.needs } : {}) }
       : {}),
     client: clientId,
     wrote: file,
@@ -1159,7 +1215,8 @@ async function add() {
     ...(ignoredFlags.length ? { ignored: ignoredFlags } : {}),
   }, () => {
     for (const d of done) {
-      say(green('✓') + ` ${bold(safe(d.name))} → ${client.name}`)
+      say(green('✓') + ` ${bold(safe(d.name))}${refShown(d)} → ${client.name}`)
+      if (found.has(d)) say(dim(`  ${safe(found.get(d))}`))
       say(dim(`  ${d.replaced ? 'entry replaced' : 'entry added'}${d.forced ? ' (--force: it was not one this tool wrote; the old one is in the .bak)' : ''}`
         + `${d.unchanged ? ' — already on this account' : ''}`))
       say(dim(`  calls go to ${safe(d.url)}`))
@@ -1185,7 +1242,8 @@ async function add() {
         say(`= ${bold(safe(d.name) || safe(d.key))} — ${safe(d.why)}`)
         say(dim(`  ${how}: ${said(d.line)}`))
       } else {
-        say(green('✓') + ` ${bold(safe(d.name) || safe(d.key))} → ${client.name}`)
+        say(green('✓') + ` ${bold(safe(d.name) || safe(d.key))}${refShown(d)} → ${client.name}`)
+        if (found.has(d)) say(dim(`  ${safe(found.get(d))}`))
         say(dim(`  ${d.replaced ? 'entry replaced' : 'entry added'} — ${how}: ${said(d.line)}`))
         say(dim('  not through the gateway: nothing was installed on the account, and no key is needed'))
       }
@@ -1873,7 +1931,9 @@ async function remove() {
   try {
     /* without a key, a server behind the gateway answers 401 — worded for `add` ("adding it needs a
        key", or its price and checkout): to `remove` it is the plain "no key held", as before */
-    const listing = key() ? await api.listingRef(name) : await api.listingRef(name).catch((err) => {
+    /* a bare name here is the key an entry was written under, so it is asked for exactly: never
+       answered with another publisher's listing of the same name, nor with a list of them */
+    const listing = key() ? await api.listingRef(name, { exact: true }) : await api.listingRef(name, { exact: true }).catch((err) => {
       throw err instanceof Refused && err.status === 401 ? keyMissing() : err
     })
     if (listing && typeof listing.id === 'string' && listing.id) id = listing.id
@@ -2332,14 +2392,14 @@ async function skillOne(verb, name, clientId, opts = {}) {
     }
   } else {
     /* without a key where the marketplace answers without one (keyless): a free skill, a paid
-       one's price, a server asked for as a skill */
-    listing = await keyless(() => api.listingRef(name))
+       one's price, a server asked for as a skill; asked for as a skill (resolveAs) */
+    listing = await keyless(() => resolveAs(name, 'skill'))
     asked = true
   }
   if (listing.kind !== 'skill') {
     throw new Refused(
       `${listing.name} is an MCP server, not a skill: it is installed as a config entry rather than as a `
-      + `folder. Use \`${NPX} add ${name}\`.\n  ${listing.page}`)
+      + `folder. Use \`${NPX} add ${refOf(listing) || name}\`.\n  ${listing.page}`)
   }
   /* A PAID SKILL IS SAID TO BE PAID BEFORE A KEY IS ASKED FOR. Without a key the answer was "This
      needs a key from your account": the person minted one, logged in, and only then read that the

@@ -4,6 +4,54 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions
 follow [semver](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] — 2026-09-30
+
+A bare name more than one publisher uses. `npx mcprush@latest add
+chrome-devtools-mcp` put in async23's copy rather than Google's
+`chromedevtools/chrome-devtools-mcp`, because the bare name was async23's key,
+and the tick said nothing about whose it was. On 29 Sep 2026, 2,282 server keys
+and 4,986 skill keys were names another publisher's listing answers to as well.
+The marketplace no longer picks one of them: it answers such a name with the
+candidates, and this version asks it precisely and prints what it answers.
+
+### Changed
+- **A name more than one publisher uses installs nothing, and lists them.**
+  The marketplace answers 422 with one line per candidate — `<publisher>/<name>`,
+  its npm or PyPI name, image or address, and its downloads a month — and the
+  way to name one; the command prints both, writes nothing and exits 1. In a
+  batch (`add a b`) the others still install, and the name lands in `failed[]`.
+  `--json` carries `ambiguous: true` and `candidates` (at most 20: `ref`, `id`,
+  `kind`, `name`, `publisher`, `package`, `repo`, `page`, `verified`,
+  `claimed`, `holdsName`, `downloads30`), every string cleaned like any other
+  from the marketplace. 0.2.2 prints the same list, without `candidates`.
+- **The tick says whose listing went in**: `✓ Chrome DevTools
+  (chromedevtools/chrome-devtools-mcp) → Claude Code` — for a server behind the
+  gateway, one the client starts itself, and a client set up by hand. A name
+  that was not a key but the slug, or the npm or PyPI name, of the only listing
+  that answers to it is said so under the tick: `` `mcp-gsheets` is the npm
+  name of freema/gsheets-mcp — the only listing that answers to it``. `--json`
+  gains `ref` beside `id`, in `installed[]`, `direct[]` and the reply for one
+  name. From a marketplace older than `ref`, it is read from the page address.
+- **The lookup says what it asks for.** `add` sends `kind=server` and `skill
+  add` sends `kind=skill`, so that `skill add x` lists the skills called x
+  rather than refusing because a server holds the key. `remove` and `add-list`
+  send `exact=1`: there the name is the key an entry was written under, or one
+  a saved list holds, which names one listing and is not asked about — `remove
+  chrome-devtools-mcp` takes out the entry `add` wrote under that key, as
+  before. The page form sends its publisher and nothing else. `skill remove`
+  asks as before: the folder's manifest decides.
+- **A name the other kind answers to is still said to be the other kind.**
+  When nothing of the kind asked for answers to a name, the marketplace
+  answers as it would without `kind`: with the listing of the other kind,
+  which is refused as 0.2.2 refused it — "Demo is an agent skill, not a server
+  … `npx mcprush@latest skill add acme/demo`", and "is an MCP server, not a
+  skill" the other way round — or, when more than one publisher uses the name,
+  with the list. The command it names is the `<publisher>/<name>` form, which
+  no namesake can answer. Should a marketplace answer such a name 404 instead,
+  it is asked once more without `kind`, and only a listing of the other kind
+  is taken from that answer, to be refused the same way; nothing is installed
+  from it.
+
 ## [0.2.2] — 2026-09-29
 
 A test on 29 Sep 2026 of every command mcprush.com's docs and pages print, run

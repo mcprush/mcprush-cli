@@ -13,7 +13,9 @@ import { readClientFile, CLIENTS } from '../lib/config.js'
 /* the routes a single `add` touches, answered as the real ones answer */
 function routes(host, overrides = {}) {
   return (req) => {
-    if (overrides[req.url]) return overrides[req.url](req)
+    /* the path: a lookup carries `kind=` or `exact=1` since 0.2.3 */
+    const path = req.url.split('?')[0]
+    if (overrides[path]) return overrides[path](req)
     if (req.url.startsWith('/api/cli/listing/')) return server(host, req.url.split('/api/cli/listing/')[1].split('?')[0])
     if (req.url === '/api/cli/install') return installed(host, req.body.listing)
     if (req.url === '/api/cli/clients') return { gateway: host, rows: CLIENT_ROWS }
@@ -252,8 +254,8 @@ test('add-list installs a paid listing the account owns, refuses the file before
         ? status(404, { safe: true, error: 'No list of yours called nope.', lists: [{ id: 'mine', name: 'Mine' }, { id: 'work', name: 'Work' }] })
         : { ok: true, list: 'mine', name: 'Mine', items: ['paidone', 'direct1', 'unowned'] }
     }
-    if (req.url === '/api/cli/listing/paidone') return server(m.host, 'paidone', { free: false, priceType: 'one_time', installed: true })
-    if (req.url === '/api/cli/listing/unowned') return server(m.host, 'unowned', { free: false, priceType: 'one_time', installed: false })
+    if (req.url.split('?')[0] === '/api/cli/listing/paidone') return server(m.host, 'paidone', { free: false, priceType: 'one_time', installed: true })
+    if (req.url.split('?')[0] === '/api/cli/listing/unowned') return server(m.host, 'unowned', { free: false, priceType: 'one_time', installed: false })
     if (req.url === '/api/cli/install' && req.body.listing === 'direct1') {
       return status(409, { safe: true, error: 'Direct1 runs on your own machine rather than behind our gateway, so there is nothing here to install: the command that starts it belongs to its own source.', where: 'https://mcprush.com/mcp/pub/direct1' })
     }
@@ -530,8 +532,8 @@ test('add-list: a member the account already held is not named in the undo after
     if (req.url === '/api/cli/list-add') {
       return { ok: true, list: 'mine', items: ['held', 'fresh'] }
     }
-    if (req.url === '/api/cli/listing/held') return server(m.host, 'held', { free: true, installed: true })
-    if (req.url === '/api/cli/listing/fresh') return server(m.host, 'fresh', { free: true })
+    if (req.url.split('?')[0] === '/api/cli/listing/held') return server(m.host, 'held', { free: true, installed: true })
+    if (req.url.split('?')[0] === '/api/cli/listing/fresh') return server(m.host, 'fresh', { free: true })
     if (req.url === '/api/cli/install') {
       /* the folder turns read-only while the second install is in flight */
       if (req.body.listing === 'fresh') chmodSync(dir, 0o555)
@@ -637,6 +639,256 @@ test('the key store is written beside and renamed, and a link in its place is re
     assert.equal(r.code, 1)
     assert.match(r.json().error, /symbolic link/)
     assert.equal(readFileSync(victim, 'utf8'), 'MINE\n', 'the file the link pointed at is untouched')
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+/* ---- a bare name more than one publisher uses (0.2.3) ------------------------------------------ */
+
+/* what the marketplace answers for a bare name more than one publisher lists: 422, the sentence
+   with one line per candidate, the way to name one, and the candidates as data */
+const AMBIGUOUS_ERROR = 'More than one publisher lists a server called chrome-devtools-mcp, so nothing was picked. Name the one you mean:\n'
+  + '  chromedevtools/chrome-devtools-mcp — npm chrome-devtools-mcp, 7.7M downloads a month\n'
+  + '  async23/chrome-devtools-mcp — npm @async23/chrome-devtools-mcp, 380 downloads a month\n'
+  + '  dinesh-nalla-se/chrome-devtools-mcp — npm @dinesh-nalla-se/chrome-devtools-mcp, 130 downloads a month'
+const AMBIGUOUS_HOW = 'Run the same command with the full name, for example chromedevtools/chrome-devtools-mcp. '
+  + 'All of them: https://mcprush.com/catalog?q=chrome-devtools-mcp'
+const ambiguous = (extra = {}) => status(422, {
+  safe: true, ambiguous: true, error: AMBIGUOUS_ERROR, how: AMBIGUOUS_HOW, name: 'chrome-devtools-mcp', kind: 'server',
+  candidates: [
+    { ref: 'chromedevtools/chrome-devtools-mcp', id: 'chromedevtools-chrome-devtools-mcp', kind: 'server', name: 'Chrome DevTools',
+      publisher: 'chromedevtools', verified: false, claimed: false, package: 'npm chrome-devtools-mcp',
+      repo: 'github.com/ChromeDevTools/chrome-devtools-mcp', downloads30: 7704955, holdsName: false,
+      page: 'https://mcprush.com/chromedevtools/chrome-devtools-mcp' },
+    /* a publisher's free text, with a clipboard sequence in it */
+    { ref: 'async23/chrome-devtools-mcp', id: 'chrome-devtools-mcp', kind: 'server', name: 'Chrome DevTools \u001b]52;c;ZXZpbA==\u0007MCP',
+      publisher: 'async23', package: 'npm @async23/chrome-devtools-mcp', downloads30: 380, holdsName: true },
+    /* a count that is not a number, and a field nobody documented */
+    { ref: 'dinesh-nalla-se/chrome-devtools-mcp', id: 'dinesh-nalla-se-chrome-devtools-mcp', downloads30: 'lots', holdsName: false, extra: 'dropped' },
+  ],
+  more: 0, search: 'https://mcprush.com/catalog?q=chrome-devtools-mcp', ...extra,
+})
+
+test('a bare name more than one publisher uses is refused with the candidates: nothing is installed or written', async () => {
+  const home = scratch('mcprush-ambiguous-')
+  const m = await marketplace((req) => routes(m.host, {
+    '/api/cli/listing/chrome-devtools-mcp': () => ambiguous(),
+    /* more candidates than a refusal carries */
+    '/api/cli/listing/many': () => ambiguous({ candidates: Array.from({ length: 25 }, (_, i) => ({ ref: `p${i}/many`, id: `p${i}-many` })) }),
+  })(req))
+  try {
+    const r = await run(m.host, home, ['add', 'chrome-devtools-mcp'])
+    assert.equal(r.code, 1)
+    assert.ok(r.err.includes('• ' + AMBIGUOUS_ERROR + '\n'), 'the sentence, every candidate line with it')
+    assert.ok(r.err.includes('  ' + AMBIGUOUS_HOW + '\n'), 'and the way to name one')
+    assert.equal(r.out, '', 'no tick')
+    assert.equal(installs(m).length, 0, 'nothing reached the account')
+    assert.ok(!existsSync(join(home, '.claude.json')), 'nothing was written')
+    assert.equal(m.seen.find((s) => s.url.startsWith('/api/cli/listing/')).url, '/api/cli/listing/chrome-devtools-mcp?kind=server')
+
+    const j = await run(m.host, home, ['add', 'chrome-devtools-mcp', '--json'])
+    assert.equal(j.code, 1)
+    const doc = j.json()
+    assert.equal(doc.ok, false)
+    assert.equal(doc.status, 422)
+    assert.equal(doc.ambiguous, true)
+    assert.equal(doc.error, AMBIGUOUS_ERROR)
+    assert.equal(doc.how, AMBIGUOUS_HOW)
+    assert.equal(doc.handled, undefined)
+    assert.deepEqual(doc.candidates.map((c) => c.ref), ['chromedevtools/chrome-devtools-mcp', 'async23/chrome-devtools-mcp', 'dinesh-nalla-se/chrome-devtools-mcp'])
+    assert.equal(doc.candidates[0].downloads30, 7704955)
+    assert.equal(doc.candidates[0].holdsName, false)
+    assert.equal(doc.candidates[1].holdsName, true)
+    assert.equal(doc.candidates[1].name, 'Chrome DevTools MCP', 'the escape sequence is gone')
+    assert.ok(!('downloads30' in doc.candidates[2]), 'a count that is not a number is left out')
+    assert.ok(!('extra' in doc.candidates[2]), 'and so is a field nobody documented')
+
+    const many = await run(m.host, home, ['add', 'many', '--json'])
+    assert.equal(many.json().candidates.length, 20, 'at most twenty, as the marketplace sends them')
+    assert.equal(installs(m).length, 0)
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('an ambiguous name among several: the others are written, it lands in failed[] with its candidates, exit 1', async () => {
+  const home = scratch('mcprush-ambiguous-')
+  const m = await marketplace((req) => routes(m.host, { '/api/cli/listing/chrome-devtools-mcp': () => ambiguous() })(req))
+  try {
+    const r = await run(m.host, home, ['add', 'chrome-devtools-mcp', 'free-srv', '--json'])
+    assert.equal(r.code, 1)
+    const doc = r.json()
+    assert.equal(doc.ok, false)
+    assert.deepEqual(doc.installed.map((d) => d.id), ['free-srv'])
+    const f = doc.failed[0]
+    assert.equal(f.name, 'chrome-devtools-mcp')
+    assert.equal(f.status, 422)
+    assert.equal(f.ambiguous, true)
+    assert.equal(f.error, AMBIGUOUS_ERROR)
+    assert.equal(f.candidates.length, 3)
+    assert.equal(f.candidates[0].ref, 'chromedevtools/chrome-devtools-mcp')
+    const servers = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers
+    assert.deepEqual(Object.keys(servers), ['free-srv'])
+    assert.deepEqual(installs(m).map((s) => s.body.listing), ['free-srv'])
+
+    const h = await run(m.host, home, ['add', 'chrome-devtools-mcp', 'free-srv'])
+    assert.equal(h.code, 1)
+    assert.match(h.out, /✓ Free Srv \(pub\/free-srv\) → Claude Code/)
+    assert.ok(h.err.includes('• chrome-devtools-mcp — ' + AMBIGUOUS_ERROR + '\n  ' + AMBIGUOUS_HOW + '\n'))
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a 422 without candidates prints the sentence and its how, alone or in a batch, and does not crash', async () => {
+  const home = scratch('mcprush-ambiguous-')
+  const bare = () => status(422, { safe: true, error: AMBIGUOUS_ERROR, how: AMBIGUOUS_HOW })
+  const m = await marketplace((req) => routes(m.host, { '/api/cli/listing/chrome-devtools-mcp': bare })(req))
+  try {
+    const r = await run(m.host, home, ['add', 'chrome-devtools-mcp'])
+    assert.equal(r.code, 1)
+    assert.ok(r.err.includes('• ' + AMBIGUOUS_ERROR + '\n  ' + AMBIGUOUS_HOW + '\n'), r.err)
+    assert.ok(!/TypeError|at .*mcprush\.js/.test(r.err), 'no stack trace')
+    const j = await run(m.host, home, ['add', 'chrome-devtools-mcp', '--json'])
+    assert.equal(j.code, 1)
+    assert.equal(j.json().status, 422)
+    assert.ok(!('candidates' in j.json()) && !('ambiguous' in j.json()), 'absent, not empty')
+    const b = await run(m.host, home, ['add', 'chrome-devtools-mcp', 'free-srv', '--json'])
+    assert.equal(b.code, 1)
+    assert.equal(b.json().failed[0].error, AMBIGUOUS_ERROR)
+    assert.ok(!('candidates' in b.json().failed[0]))
+    assert.deepEqual(b.json().installed.map((d) => d.id), ['free-srv'])
+    /* and a 422 with no body at all is still a sentence */
+    const m2 = await marketplace((req) => routes(m2.host, { '/api/cli/listing/x': () => status(422, null) })(req))
+    try {
+      const e = await run(m2.host, home, ['add', 'x'])
+      assert.equal(e.code, 1)
+      assert.match(e.err, /The marketplace answered 422\./)
+    } finally {
+      await m2.close()
+    }
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('the lookups say what they ask for: add sends kind=server, add-list exact=1, the page form only its publisher', async () => {
+  const home = scratch('mcprush-lookups-')
+  const m = await marketplace((req) => {
+    if (req.url === '/api/cli/list-add') return { ok: true, list: 'mine', name: 'Mine', items: ['stored-one'] }
+    return routes(m.host)(req)
+  })
+  const lookups = () => m.seen.filter((s) => s.url.startsWith('/api/cli/listing/')).map((s) => s.url)
+  try {
+    const a = await run(m.host, home, ['add', 'free-srv', '--dry-run', '--json'])
+    assert.equal(a.code, 0, a.err)
+    assert.deepEqual(lookups(), ['/api/cli/listing/free-srv?kind=server'])
+    m.seen.length = 0
+    const p = await run(m.host, home, ['add', 'acme/free-srv', '--dry-run', '--json'])
+    assert.equal(p.code, 0, p.err)
+    assert.deepEqual(lookups(), ['/api/cli/listing/free-srv?pub=acme'], 'the page form: its publisher, no exact, no kind')
+    m.seen.length = 0
+    const l = await run(m.host, home, ['add-list', 'mine', '--dry-run', '--json'])
+    assert.equal(l.code, 0, l.err)
+    assert.deepEqual(lookups(), ['/api/cli/listing/stored-one?exact=1'], 'a stored key is asked for exactly')
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('the tick names whose listing went in, and a name that was not a key says what it matched', async () => {
+  const home = scratch('mcprush-whose-')
+  const m = await marketplace((req) => routes(m.host, {
+    /* the marketplace's own ref */
+    '/api/cli/listing/free-srv': () => server(m.host, 'free-srv', { ref: 'acme/free-srv', matched: 'key' }),
+    /* a slug nobody holds as a key, answered by its one listing */
+    '/api/cli/listing/fx-only': () => server(m.host, 'pc-fx-only', { slug: 'fx-only', ref: 'pc/fx-only', matched: 'name' }),
+    /* an npm name, answered by its one listing, which the client starts itself */
+    '/api/cli/listing/mcp-gsheets': () => server(m.host, 'freema-gsheets-mcp', {
+      name: 'Google Sheets', slug: 'gsheets-mcp', ref: 'freema/gsheets-mcp', matched: 'package',
+      ready: false, local: true, delivery: 'local', start: 'npx -y mcp-gsheets', page: 'https://mcprush.com/freema/gsheets-mcp',
+      source: { kind: 'npm', value: 'mcp-gsheets' } }),
+    /* a ref this tool would not take back as a name: the page stands in for it */
+    '/api/cli/listing/odd': () => server(m.host, 'odd', { ref: 'x\u001b[31m/y/z', page: 'https://mcprush.com/oddpub/odd' }),
+  })(req))
+  try {
+    const g = await run(m.host, home, ['add', 'free-srv'])
+    assert.equal(g.code, 0, g.err)
+    assert.match(g.out, /^✓ Free Srv \(acme\/free-srv\) → Claude Code\n {2}entry added\n/)
+    assert.ok(!/the only listing that answers/.test(g.out), 'a key is a key: no line for it')
+    const gj = await run(m.host, home, ['add', 'free-srv', '--json'])
+    assert.equal(gj.json().ref, 'acme/free-srv')
+    assert.equal(gj.json().installed[0].ref, 'acme/free-srv')
+
+    const n = await run(m.host, home, ['add', 'fx-only'])
+    assert.equal(n.code, 0, n.err)
+    assert.match(n.out, /^✓ Pc Fx Only \(pc\/fx-only\) → Claude Code\n {2}`fx-only` is the name of pc\/fx-only — the only listing that answers to it\n {2}entry added\n/)
+    assert.ok(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers['pc-fx-only'], 'written under its key')
+
+    const d = await run(m.host, home, ['add', 'mcp-gsheets'], { noKey: true })
+    assert.equal(d.code, 0, d.err)
+    assert.match(d.out, /^✓ Google Sheets \(freema\/gsheets-mcp\) → Claude Code\n {2}`mcp-gsheets` is the npm name of freema\/gsheets-mcp — the only listing that answers to it\n {2}entry added — it starts with: /)
+    const dj = await run(m.host, home, ['add', 'mcp-gsheets', '--json'], { noKey: true })
+    assert.equal(dj.json().ref, 'freema/gsheets-mcp')
+    assert.equal(dj.json().direct[0].ref, 'freema/gsheets-mcp')
+
+    /* an older marketplace, with no ref: the page's last two segments */
+    const o = await run(m.host, home, ['add', 'plain-srv'])
+    assert.match(o.out, /^✓ Plain Srv \(pub\/plain-srv\) → Claude Code\n/)
+    const odd = await run(m.host, home, ['add', 'odd'])
+    assert.match(odd.out, /^✓ Odd \(oddpub\/odd\) → Claude Code\n/)
+
+    /* a client set up by hand */
+    const h = await run(m.host, home, ['add', 'fx-only', '--client', 'codex'])
+    assert.equal(h.code, 0, h.err)
+    assert.match(h.out, /^✓ Pc Fx Only \(pc\/fx-only\) is installed on this account\.\n {2}`fx-only` is the name of pc\/fx-only — the only listing that answers to it\n/)
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a key held by the other kind is still said to be a skill when kind=server finds nothing, and nothing is installed from it', async () => {
+  const home = scratch('mcprush-otherkind-')
+  const m = await marketplace((req) => {
+    const [path, query] = req.url.split('?')
+    if (path === '/api/cli/listing/sk_demo') {
+      return query === 'kind=server'
+        ? status(404, { safe: true, error: 'There is no listing called sk_demo.', how: 'Search for it at https://mcprush.com/catalog?q=sk_demo (servers) or https://mcprush.com/skills?q=sk_demo (skills).' })
+        : { id: 'sk_demo', name: 'Demo', kind: 'skill', status: 'live', free: true, slug: 'demo', ref: 'acme/demo', page: 'https://mcprush.com/acme/demo' }
+    }
+    /* nothing of either kind, and a marketplace that contradicts itself: the first 404 stands */
+    if (path === '/api/cli/listing/nope') return status(404, { safe: true, error: 'There is no listing called nope.' })
+    if (path === '/api/cli/listing/flaky') return query ? status(404, { safe: true, error: 'There is no listing called flaky.' }) : server(m.host, 'flaky')
+    if (path === '/api/cli/listing/gone') return status(404, { safe: true, error: 'There is no listing called gone.' })
+    return routes(m.host)(req)
+  })
+  const asked = (name) => m.seen.filter((s) => s.url.split('?')[0] === '/api/cli/listing/' + name).map((s) => s.url)
+  try {
+    const r = await run(m.host, home, ['add', 'sk_demo'])
+    assert.equal(r.code, 1)
+    assert.match(r.err, /Demo is an agent skill, not a server[\s\S]*Write it to disk with `npx mcprush@latest skill add acme\/demo`/)
+    assert.deepEqual(asked('sk_demo'), ['/api/cli/listing/sk_demo?kind=server', '/api/cli/listing/sk_demo'])
+
+    const nope = await run(m.host, home, ['add', 'nope', '--json'])
+    assert.equal(nope.json().status, 404)
+    assert.equal(nope.json().error, 'There is no listing called nope.')
+    const flaky = await run(m.host, home, ['add', 'flaky', '--json'])
+    assert.equal(flaky.json().status, 404, 'a server from the second answer is not installed')
+    assert.equal(flaky.json().error, 'There is no listing called flaky.')
+    /* the page form sent no kind, so there is nothing to ask again */
+    const pub = await run(m.host, home, ['add', 'acme/gone', '--json'])
+    assert.equal(pub.json().status, 404)
+    assert.deepEqual(asked('gone'), ['/api/cli/listing/gone?pub=acme'])
+
+    assert.equal(installs(m).length, 0)
+    assert.ok(!existsSync(join(home, '.claude.json')))
   } finally {
     await m.close()
     rmSync(home, { recursive: true, force: true })

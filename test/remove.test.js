@@ -121,7 +121,7 @@ test('a gateway entry the account no longer holds is still taken out, with exit 
   ]
   const home2 = scratch('mcprush-rm-')
   const m2 = await marketplace((req) => {
-    const c = cases.find(([id]) => req.url === '/api/cli/listing/' + id || (req.body && req.body.listing === id))
+    const c = cases.find(([id]) => req.url.split('?')[0] === '/api/cli/listing/' + id || (req.body && req.body.listing === id))
     if (!c) return status(404, { error: 'There is no endpoint at that address.' })
     if (req.url === '/api/cli/uninstall') return { ok: true, id: c[0], ...c[1] }
     return c[2] ? server(m2.host, c[0], c[2]) : status(404, { safe: true, error: `There is no listing called ${c[0]}.` })
@@ -267,6 +267,41 @@ test('--client Cursor is Cursor, and a client nobody knows is refused before the
     assert.equal(bad.code, 1)
     assert.match(bad.json().error, /not a client this marketplace knows/)
     assert.equal(m.seen.filter((s) => s.url === '/api/cli/uninstall').length, 1, 'the typo sent no uninstall')
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('remove asks for the key its entry was written under exactly, so a name other publishers use does not stop it', async () => {
+  const home = scratch('mcprush-rm-')
+  const m = await marketplace((req) => {
+    const [path, query] = req.url.split('?')
+    if (path === '/api/cli/listing/chrome-devtools-mcp') {
+      /* the key, asked for exactly or through its publisher; a bare name is asked about */
+      if (query === 'exact=1' || query === 'pub=async23') return server(m.host, 'chrome-devtools-mcp', { ref: 'async23/chrome-devtools-mcp' })
+      return status(422, { safe: true, ambiguous: true, error: 'More than one publisher lists a server called chrome-devtools-mcp, so nothing was picked.' })
+    }
+    if (path === '/api/cli/uninstall') return { ok: true, id: req.body.listing, free: true }
+    return status(404, { error: 'There is no endpoint at that address.' })
+  })
+  const lookups = () => m.seen.filter((s) => s.url.startsWith('/api/cli/listing/')).map((s) => s.url)
+  try {
+    seed(home, { 'chrome-devtools-mcp': gw(m.host, 'chrome-devtools-mcp') })
+    const r = await run(m.host, home, ['remove', 'chrome-devtools-mcp', '--json'])
+    assert.equal(r.code, 0, r.err + r.out)
+    assert.equal(r.json().id, 'chrome-devtools-mcp')
+    assert.deepEqual(lookups(), ['/api/cli/listing/chrome-devtools-mcp?exact=1'])
+    assert.deepEqual(m.seen.find((s) => s.url === '/api/cli/uninstall').body, { listing: 'chrome-devtools-mcp' })
+    assert.deepEqual(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers, {})
+
+    /* the page form names its publisher, and nothing else */
+    m.seen.length = 0
+    seed(home, { 'chrome-devtools-mcp': gw(m.host, 'chrome-devtools-mcp') })
+    const p = await run(m.host, home, ['remove', 'async23/chrome-devtools-mcp', '--json'])
+    assert.equal(p.code, 0, p.err + p.out)
+    assert.deepEqual(lookups(), ['/api/cli/listing/chrome-devtools-mcp?pub=async23'])
+    assert.deepEqual(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers, {})
   } finally {
     await m.close()
     rmSync(home, { recursive: true, force: true })

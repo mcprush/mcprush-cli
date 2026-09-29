@@ -162,7 +162,7 @@ test('I21: add writes a direct server as its page prints it, no key and no insta
     assert.equal(r.code, 0, r.err)
     assert.deepEqual(servers(home).pulse, { command: 'uvx', args: ['--with', 'mcp<2', 'policy-pulse-mcp'] })
     assert.deepEqual(servers(home).brave, { command: 'npx', args: ['-y', '@brave/brave-search-mcp-server'], env: { BRAVE_API_KEY: '<your value>' } })
-    assert.match(r.out, /✓ pulse → Claude Code\n {2}entry added — it starts with: uvx --with 'mcp<2' policy-pulse-mcp\n/i)
+    assert.match(r.out, /✓ pulse \(pub\/pulse\) → Claude Code\n {2}entry added — it starts with: uvx --with 'mcp<2' policy-pulse-mcp\n/i)
     assert.equal(m.seen.filter((s) => s.url === '/api/cli/install').length, 0, 'nothing installed on the account')
     assert.ok(m.seen.every((s) => !s.auth), 'and no key sent')
     /* its own entry, taken out again without a key and without --force */
@@ -387,8 +387,8 @@ test('I40: a name copied with the punctuation of its sentence is read without it
     const s = await run(m.host, home, ['stack', 'add', 'pr-desk:'], { noKey: true })
     assert.equal(m.seen.find((x) => x.url === '/api/cli/stack').body.stack, 'pr-desk', s.err)
     await run(m.host, home, ['add', 'pulse,', 'brave.'], { noKey: true })
-    assert.ok(m.seen.some((x) => x.url === '/api/cli/listing/pulse'))
-    assert.ok(m.seen.some((x) => x.url === '/api/cli/listing/brave'))
+    assert.ok(m.seen.some((x) => x.url.split('?')[0] === '/api/cli/listing/pulse'))
+    assert.ok(m.seen.some((x) => x.url.split('?')[0] === '/api/cli/listing/brave'))
     /* a name that is only dots is not turned into another one */
     const dots = await run(m.host, home, ['add', 'pub/..', '--json'], { noKey: true })
     assert.match(dots.json().error, /not a listing name/)

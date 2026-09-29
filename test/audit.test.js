@@ -865,7 +865,7 @@ test('K36: add writes a direct server\'s own entry, not "no verified endpoint ye
        prints — rather than refused with its line; no install is recorded, no key is asked for */
     const r = await run(m.host, home, ['add', 'remote1'])
     assert.equal(r.code, 0, r.err)
-    assert.match(r.out, /✓ Remote1 → Claude Code\n  entry added — it connects to: https:\/\/mcp\.example\.com\/mcp/)
+    assert.match(r.out, /✓ Remote1 \(pub\/remote1\) → Claude Code\n  entry added — it connects to: https:\/\/mcp\.example\.com\/mcp/)
     assert.match(r.out, /not through the gateway: nothing was installed on the account, and no key is needed/)
     assert.match(r.out, /mcprush\.com\/mcp\/pub\/remote1/)
     assert.ok(!/no verified endpoint/.test(r.out + r.err))
@@ -885,7 +885,7 @@ test('K36: add writes a direct server\'s own entry, not "no verified endpoint ye
       const k = await run(m.host, home, ['add', id], { noKey: true })
       assert.equal(k.code, 0, `${id}: ${k.err}`)
       assert.ok(!/No key held|needs a key/.test(k.out + k.err), `${id}: no key asked for`)
-      assert.equal(m.seen.filter((x) => x.url === '/api/cli/listing/' + id).at(-1).auth, null, `${id}: asked without a key`)
+      assert.equal(m.seen.filter((x) => x.url.split('?')[0] === '/api/cli/listing/' + id).at(-1).auth, null, `${id}: asked without a key`)
     }
 
     /* [14] the variable the line will not start without, after the line — in the entry as the placeholder */
