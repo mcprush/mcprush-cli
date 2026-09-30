@@ -4,6 +4,43 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions
 follow [semver](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] — 2026-09-30
+
+A docker image's entry passed `-e NAME` for every variable the listing declares,
+optional ones included. An `-e NAME` with nothing set for NAME is not "nothing":
+docker sends the bare name, and the daemon takes the image's own value of it
+away. ai-memory's image lost `AI_MEMORY_DB`, the path of its database, and
+wyre's images answered over stdio only because their `MCP_TRANSPORT=http` went
+the same way. mcprush.com's pages and its start line pass the required
+variables only since 30 Sep 2026 (and pin `-e MCP_TRANSPORT=stdio` for wyre's
+and gramps' images), so 0.2.3 printed "the marketplace printed a different
+line" beside every image with an optional variable; this version writes the
+line the page prints.
+
+### Changed
+- **An image is passed only its required variables.** `add` and `stack add`
+  write `-e NAME` for each variable the marketplace marks as required — the
+  names the entry holds under env, and the marketplace's `needs` — and none
+  for an optional one: `docker run -i --rm -e GRAFANA_URL
+  docker.io/grafana/mcp-grafana:1.6.1 -t stdio`, and ai-memory with no `-e`
+  at all. A server that serves HTTP is started with the same `-e` list on the
+  line printed for it.
+- **"May need" says how to set an optional variable of an image**: add
+  `-e NAME` before the image in its args and give it a value under env — an
+  `-e` with no value set clears the default the image sets — or, for one
+  started by hand, add `-e NAME` to the line it is started with and set it in
+  that terminal. A name the image's own options already set
+  (`-e MCP_TRANSPORT=stdio`) is not listed. Packages are told as before.
+- **The entry an earlier version wrote, with `-e` for every declared name, is
+  ours.** `add`, `stack add` and a re-add replace it without asking or
+  `--force`, with the launcher's options or without them (wyre's, from before
+  the marketplace pinned the transport), and `remove` takes it out. A copy
+  with values of yours in its env is kept, as before, and the optional names it
+  passes with nothing set for them are named: "your entry passes
+  GRAFANA_SERVICE_ACCOUNT_TOKEN into the container with no value of yours set
+  for it … take -e GRAFANA_SERVICE_ACCOUNT_TOKEN out of its args, or give it a
+  value under env". `--json` carries them as `passesUnset`.
+
 ## [0.2.3] — 2026-09-30
 
 A bare name more than one publisher uses. `npx mcprush@latest add

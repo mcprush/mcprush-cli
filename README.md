@@ -72,7 +72,10 @@ you to run in a terminal of its own; a server that needs a step once before its
 first start — a sign-in, an `init` — has that line printed as "run once first". A variable the marketplace marks as
 required goes into the entry as `<your value>`, and you are told to set it; one
 it does not mark as required is listed as "may need" and left out of the entry,
-so the server starts on its own default. A name that steers the launcher or the
+so the server starts on its own default. An image is passed only its required
+variables (`-e NAME`), as the page prints it: an `-e` with nothing set for it
+clears the value the image sets itself, so to set an optional one you add both
+its `-e NAME` to the args and its value under env. A name that steers the launcher or the
 process itself — `PATH`, `HOME`, `NODE_OPTIONS`, `DOCKER_*`, `NPM_CONFIG_*`,
 `UV_*`, `PIP_*` and the like — is never written, only named. Gateway members
 are installed and written as `add` does. A member it
@@ -301,7 +304,7 @@ No dependencies and no build step: the files in `bin/` and `lib/` are what
 ships.
 
 ```sh
-npm test                 # 168 tests, node:test, no runner to install
+npm test                 # 170 tests, node:test, no runner to install
 npm pack --dry-run       # what would go to the registry
 node bin/mcprush.js --help
 ```

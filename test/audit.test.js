@@ -190,7 +190,7 @@ test('K9: stack add leaves a hand-written entry under a gateway member\'s name a
 test('K1/K9: the entry 0.1.4 wrote for a direct member is rewritten without --force; a copy of the person\'s is kept and still told what it lacks', async () => {
   const direct = [
     { id: 'remote', name: 'Remote', start: 'https://mcp.example.com/mcp', source: { kind: 'url', value: 'https://mcp.example.com/mcp', transport: 'http' } },
-    { id: 'boxed', name: 'Boxed', start: 'docker run -i --rm -e REGION mcp/boxed', source: { kind: 'image', value: 'mcp/boxed', env: ['REGION'] } },
+    { id: 'boxed', name: 'Boxed', start: 'docker run -i --rm -e REGION mcp/boxed', source: { kind: 'image', value: 'mcp/boxed', env: [{ key: 'REGION', required: true }] } },
     { id: 'tok', name: 'Tok', start: 'npx -y tok-mcp', source: { kind: 'npm', value: 'tok-mcp', env: [{ key: 'TOK', required: true }] } },
   ]
   const answer = { ok: true, stack: 's', name: 'S', added: [], skipped: [], direct, counts: { added: 0, direct: 3, skipped: 0 } }
@@ -209,7 +209,7 @@ test('K1/K9: the entry 0.1.4 wrote for a direct member is rewritten without --fo
     assert.deepEqual(d.json().conflicts, [])
     const servers = JSON.parse(readFileSync(file, 'utf8')).mcpServers
     assert.deepEqual(servers.remote, { command: 'npx', args: ['-y', BRIDGE_SPEC, 'https://mcp.example.com/mcp'] })
-    assert.deepEqual(servers.boxed, { command: 'docker', args: ['run', '-i', '--rm', '-e', 'REGION', 'mcp/boxed'] })
+    assert.deepEqual(servers.boxed, { command: 'docker', args: ['run', '-i', '--rm', '-e', 'REGION', 'mcp/boxed'], env: { REGION: '<your value>' } })
     assert.deepEqual(servers.tok, { command: 'npx', args: ['-y', 'tok-mcp'], env: { TOK: '<your value>' } })
 
     /* Cursor: the docker line without -e, and a copy of the person's with an empty env */
@@ -221,7 +221,7 @@ test('K1/K9: the entry 0.1.4 wrote for a direct member is rewritten without --fo
     const c = await run(m.host, home, ['stack', 'add', 's', '--client', 'cursor'])
     assert.equal(c.code, 0, c.out + c.err)
     const cur = JSON.parse(readFileSync(join(home, '.cursor', 'mcp.json'), 'utf8')).mcpServers
-    assert.deepEqual(cur.boxed, { command: 'docker', args: ['run', '-i', '--rm', '-e', 'REGION', 'mcp/boxed'] })
+    assert.deepEqual(cur.boxed, { command: 'docker', args: ['run', '-i', '--rm', '-e', 'REGION', 'mcp/boxed'], env: { REGION: '<your value>' } })
     assert.deepEqual(cur.tok, { command: 'npx', args: ['-y', 'tok-mcp'], env: {} }, 'kept as it is')
     assert.match(c.out, /= tok\s+already in the file — left as it is/)
     assert.ok(!/tok[^\n]*values of yours/.test(c.out), 'no values of the person\'s to speak of')
@@ -263,7 +263,7 @@ test('K13: only a variable marked required gets a placeholder — a bare name, a
     { id: 'sentry', name: 'Sentry', page: 'https://mcprush.com/p/sentry', start: 'npx -y sentry-mcp-server',
       source: { kind: 'npm', value: 'sentry-mcp-server', run: null, transport: 'stdio', noEntry: false, env: ['SENTRY_AUTH_TOKEN', 'SENTRY_BASE_URL'] } },
     /* the shape it is asked to send (handoff): the flag decides */
-    { id: 'postgres', name: 'Postgres', page: 'https://mcprush.com/p/postgres', start: 'docker run -i --rm -e DATABASE_URL -e PGOPT mcp/postgres',
+    { id: 'postgres', name: 'Postgres', page: 'https://mcprush.com/p/postgres', start: 'docker run -i --rm -e DATABASE_URL mcp/postgres',
       source: { kind: 'image', value: 'mcp/postgres', env: [{ key: 'DATABASE_URL', required: true }, { key: 'PGOPT', required: false }] } },
     { id: 'drift', name: 'Drift', page: 'https://mcprush.com/p/drift', start: 'npx -y something-else',
       source: { kind: 'npm', value: 'drift-mcp' } },
@@ -274,14 +274,15 @@ test('K13: only a variable marked required gets a placeholder — a bare name, a
     const servers = JSON.parse(readFileSync(join(home, '.cursor', 'mcp.json'), 'utf8')).mcpServers
     assert.deepEqual(servers.sentry, { command: 'npx', args: ['-y', 'sentry-mcp-server'] }, 'no <your value> over SENTRY_BASE_URL\'s default')
     assert.deepEqual(servers.postgres, {
-      command: 'docker', args: ['run', '-i', '--rm', '-e', 'DATABASE_URL', '-e', 'PGOPT', 'mcp/postgres'], env: { DATABASE_URL: '<your value>' },
-    }, 'every declared name is passed to the container, only the required one is filled in')
+      command: 'docker', args: ['run', '-i', '--rm', '-e', 'DATABASE_URL', 'mcp/postgres'], env: { DATABASE_URL: '<your value>' },
+    }, 'only the required name is passed to the container, and filled in: an unset -e PGOPT would clear the image\'s own value (0.2.4)')
     assert.match(r.out, /may need SENTRY_AUTH_TOKEN, SENTRY_BASE_URL — none is marked as required, so none is in the entry/)
     assert.ok(!/set SENTRY/.test(r.out), 'a bare name is not said to be needed')
     assert.match(r.out, /set DATABASE_URL in .*mcp\.json: the entry holds <your value> until you do, and the server needs it to work/)
-    assert.match(r.out, /may need PGOPT — not marked as required, so it is not in the entry/)
+    assert.match(r.out, /may need PGOPT — not marked as required, so it is not in the entry or passed to the container; to set one, add -e NAME before the image in its args and give it a value under env in .*mcp\.json — an -e with no value set clears the default the image sets/)
+    assert.match(r.out, /may need SENTRY_AUTH_TOKEN, SENTRY_BASE_URL — none is marked as required, so none is in the entry; add any the server asks for under env in /, 'a package is told as before')
     assert.equal((r.out.match(/needs (it|them) to work/g) || []).length, 1, 'only the required one is claimed as needed')
-    assert.match(r.out, /\+ postgres\s+docker run -i --rm -e DATABASE_URL -e PGOPT mcp\/postgres/)
+    assert.match(r.out, /\+ postgres\s+docker run -i --rm -e DATABASE_URL mcp\/postgres\n/)
     assert.ok(!/postgres[\s\S]*printed a different line[\s\S]*\+ drift/.test(r.out), 'a line that agrees is not flagged')
     assert.match(r.out, /\+ drift\s+npx -y drift-mcp\n\s+the marketplace printed a different line for it: npx -y something-else/)
 
@@ -333,14 +334,15 @@ test('K13: a name that steers the launcher or the process is never given a place
     { id: 'duck', name: 'Duck', start: 'npx -y duck-mcp',
       source: { kind: 'npm', value: 'duck-mcp', env: [{ key: 'HOME', required: true }, { key: 'NPM_CONFIG_REGISTRY', required: true }, { key: 'DUCK_TOKEN', required: true }] } },
     { id: 'stack', name: 'Local', start: 'docker run -i --rm -e DOCKER_HOST -e REGION mcp/local',
-      source: { kind: 'image', value: 'mcp/local', env: ['DOCKER_HOST', 'NODE_OPTIONS', 'REGION'] } },
+      source: { kind: 'image', value: 'mcp/local', env: [{ key: 'DOCKER_HOST', required: true }, 'NODE_OPTIONS', { key: 'REGION', required: true }] } },
   ]
   await withMarket({ ok: true, stack: 's', name: 'S', added: [], skipped: [], direct, counts: { added: 0, direct: 2, skipped: 0 } }, async (m, home) => {
     const r = await run(m.host, home, ['stack', 'add', 's', '--client', 'cursor'])
     assert.equal(r.code, 0, r.err)
     const servers = JSON.parse(readFileSync(join(home, '.cursor', 'mcp.json'), 'utf8')).mcpServers
     assert.deepEqual(servers.duck, { command: 'npx', args: ['-y', 'duck-mcp'], env: { DUCK_TOKEN: '<your value>' } })
-    assert.deepEqual(servers.stack, { command: 'docker', args: ['run', '-i', '--rm', '-e', 'REGION', 'mcp/local'] }, 'no -e for the launcher\'s names')
+    assert.deepEqual(servers.stack, { command: 'docker', args: ['run', '-i', '--rm', '-e', 'REGION', 'mcp/local'], env: { REGION: '<your value>' } },
+      'no -e for the launcher\'s names, required or not')
     assert.match(r.out, /set DUCK_TOKEN in /)
     assert.ok(!/set [^\n]*(HOME|NPM_CONFIG_REGISTRY|DOCKER_HOST|NODE_OPTIONS)/.test(r.out), 'never among what to set')
     assert.match(r.out, /declares HOME, NPM_CONFIG_REGISTRY, which steer the launcher or the process itself — not written; set them only if you know why/)

@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs'
 import { marketplace, run, scratch, status, server, installed, CLIENT_ROWS } from './harness.js'
-import { directStart, directEntryFor, legacyEntriesFor, lacksOf, startLineOf } from '../lib/config.js'
+import { directStart, directEntryFor, directEntryOurs, legacyEntriesFor, lacksOf, startLineOf } from '../lib/config.js'
 import { setupFor, directSetupFor, WINDOWS_POLICY } from '../lib/byhand.js'
 
 const WIN32 = { NODE_OPTIONS: `--import=${new URL('./as-win32.mjs', import.meta.url).href}` }
@@ -432,5 +432,122 @@ test('I34/I39/I30/I36: skill add says what the client will make of the skill —
     assert.ok(!/1,024/.test(w.out), 'only where the limit is enforced')
     const b = await run(m.host, home, ['skill', 'add', 'bare'], { noKey: true })
     assert.match(b.out, /Its SKILL\.md has no name and description at its top, which Claude Code and Gemini CLI need: they skip it until the header is added\./)
+  })
+})
+
+/* ---- 0.2.4: an image is passed only its required variables ------------------------------------- */
+
+/* three live listings as /api/cli/listing sent them on 30 Sep 2026, with the line the site prints
+   for each since migration 578: `-e` for the required names only. An `-e NAME` with NAME unset is
+   docker's "no value", and the daemon takes the image's own ENV of that name away — ai-memory lost
+   AI_MEMORY_DB, wyre's images their MCP_TRANSPORT=http (which 578 now pins to stdio in `with`) */
+const IMAGES = {
+  grafana: { source: { kind: 'image', value: 'docker.io/grafana/mcp-grafana:1.6.1', args: ['-t', 'stdio'],
+    env: [{ key: 'GRAFANA_URL', required: true }, { key: 'GRAFANA_SERVICE_ACCOUNT_TOKEN', required: false }, { key: 'GRAFANA_ORG_ID', required: false }] },
+  start: 'docker run -i --rm -e GRAFANA_URL docker.io/grafana/mcp-grafana:1.6.1 -t stdio' },
+  memory: { source: { kind: 'image', value: 'ghcr.io/alphaonedev/ai-memory:0.5.1', with: ['--platform', 'linux/amd64', '-v', 'ai-memory-data:/data'],
+    args: ['--db', '/data/ai-memory.db', 'mcp'], env: [{ key: 'AI_MEMORY_DB', required: false }] },
+  start: 'docker run -i --rm --platform linux/amd64 -v ai-memory-data:/data ghcr.io/alphaonedev/ai-memory:0.5.1 --db /data/ai-memory.db mcp' },
+  mimecast: { source: { kind: 'image', value: 'ghcr.io/wyre-ai/mimecast-mcp:v1.3.6', with: ['-e', 'MCP_TRANSPORT=stdio'],
+    env: [{ key: 'MIMECAST_CLIENT_ID', required: true }, { key: 'MIMECAST_CLIENT_SECRET', required: true }, { key: 'MIMECAST_REGION', required: false },
+      { key: 'MCP_TRANSPORT', required: false }, { key: 'LOG_LEVEL', required: false }] },
+  start: 'docker run -i --rm -e MCP_TRANSPORT=stdio -e MIMECAST_CLIENT_ID -e MIMECAST_CLIENT_SECRET ghcr.io/wyre-ai/mimecast-mcp:v1.3.6' },
+  /* one that serves HTTP, started by hand: an optional name goes on that line */
+  served: { source: { kind: 'image', value: 'wyre/x-proxy:1', transport: 'streamable-http', localUrl: 'http://localhost:8080/mcp',
+    env: [{ key: 'LOG_LEVEL', required: false }] }, start: 'docker run --rm -p 8080:8080 wyre/x-proxy:1' },
+}
+const needsOf = (id) => IMAGES[id].source.env.filter((e) => e.required).map((e) => e.key)
+const imageRoutes = () => Object.fromEntries(Object.entries(IMAGES).map(([id, l]) => [`/api/cli/listing/${id}`,
+  () => server('http://127.0.0.1', id, { ready: false, local: true, delivery: 'local', page: page(id), source: l.source, start: l.start, needs: needsOf(id) })]))
+/* what 0.2.3 wrote for each: `-e` for every declared name, the launcher's excepted */
+const WROTE_023 = {
+  grafana: { command: 'docker', args: ['run', '-i', '--rm', '-e', 'GRAFANA_URL', '-e', 'GRAFANA_SERVICE_ACCOUNT_TOKEN', '-e', 'GRAFANA_ORG_ID',
+    'docker.io/grafana/mcp-grafana:1.6.1', '-t', 'stdio'], env: { GRAFANA_URL: '<your value>' } },
+  memory: { command: 'docker', args: ['run', '-i', '--rm', '--platform', 'linux/amd64', '-v', 'ai-memory-data:/data', '-e', 'AI_MEMORY_DB',
+    'ghcr.io/alphaonedev/ai-memory:0.5.1', '--db', '/data/ai-memory.db', 'mcp'] },
+  /* before migration 578 pinned the transport: no `with` yet */
+  mimecast: { command: 'docker', args: ['run', '-i', '--rm', '-e', 'MIMECAST_CLIENT_ID', '-e', 'MIMECAST_CLIENT_SECRET', '-e', 'MIMECAST_REGION',
+    '-e', 'MCP_TRANSPORT', '-e', 'LOG_LEVEL', 'ghcr.io/wyre-ai/mimecast-mcp:v1.3.6'],
+  env: { MIMECAST_CLIENT_ID: '<your value>', MIMECAST_CLIENT_SECRET: '<your value>' } },
+}
+
+test('0.2.4: an image is passed only its required variables, as the page prints it; the form with -e for every one is an earlier one of ours', () => {
+  for (const id of ['grafana', 'memory', 'mimecast']) {
+    const s = directStart(IMAGES[id].source, needsOf(id))
+    assert.equal(startLineOf(s), IMAGES[id].start, `${id}: the site's line, word for word`)
+  }
+  assert.deepEqual(directStart(IMAGES.memory.source).may, ['AI_MEMORY_DB'])
+  assert.equal(directStart(IMAGES.memory.source).need, undefined)
+  /* a name the publisher's options already set in the container is not one to add */
+  assert.deepEqual(directStart(IMAGES.mimecast.source).may, ['MIMECAST_REGION', 'LOG_LEVEL'])
+  assert.equal(startLineOf(directStart(IMAGES.served.source)), IMAGES.served.start, 'the line a server that serves HTTP is started with too')
+
+  /* what 0.2.3 wrote is ours, with the pinned transport and without it */
+  const g = directStart(IMAGES.grafana.source, needsOf('grafana'))
+  const mc = directStart(IMAGES.mimecast.source, needsOf('mimecast'))
+  assert.ok(directEntryOurs('http', g, WROTE_023.grafana))
+  assert.ok(directEntryOurs('http', directStart(IMAGES.memory.source), WROTE_023.memory))
+  assert.ok(directEntryOurs('http', mc, WROTE_023.mimecast), 'from before migration 578')
+  const since578 = { ...WROTE_023.mimecast, args: ['run', '-i', '--rm', '-e', 'MCP_TRANSPORT=stdio', ...WROTE_023.mimecast.args.slice(3)] }
+  assert.ok(directEntryOurs('http', mc, since578), 'and after it')
+  assert.ok(directEntryOurs('vscode', g, { type: 'stdio', ...WROTE_023.grafana }), 'in every client\'s form')
+  /* a copy with the person's values in it: what it passes with -e that it does not set is named by the caller */
+  assert.deepEqual(lacksOf('http', g, { ...WROTE_023.grafana, env: { GRAFANA_URL: 'https://g.example.com' } }),
+    { clears: ['GRAFANA_SERVICE_ACCOUNT_TOKEN', 'GRAFANA_ORG_ID'] })
+  assert.deepEqual(lacksOf('http', mc, { ...WROTE_023.mimecast, env: { MIMECAST_CLIENT_ID: 'a', MIMECAST_CLIENT_SECRET: 'b' } }),
+    { withArgs: ['-e', 'MCP_TRANSPORT=stdio'], clears: ['MIMECAST_REGION', 'MCP_TRANSPORT', 'LOG_LEVEL'] })
+  assert.equal(lacksOf('http', g, { ...directEntryFor('http', g), env: { GRAFANA_URL: 'https://g.example.com' } }), null, 'today\'s form lacks nothing')
+  /* an entry with no `-e` at all passes nothing unset: today's for an image with no required name,
+     and 0.1.4's (legacyForms drop every `-e`, and must not be read as the `-e`-for-every form) */
+  const mem = directStart(IMAGES.memory.source)
+  assert.equal(lacksOf('http', mem, { ...directEntryFor('http', mem), env: { AI_MEMORY_DB: '/data/x.db' } }), null)
+  assert.equal(lacksOf('http', mem, { ...directEntryFor('http', mem), env: { OTHER: '1' } }), null, 'not told to take out an -e it does not have')
+  assert.equal(lacksOf('http', g, { command: 'docker', args: ['run', '-i', '--rm', 'docker.io/grafana/mcp-grafana:1.6.1', '-t', 'stdio'],
+    env: { GRAFANA_URL: 'https://g.example.com' } }), null, '0.1.4\'s line, filled in')
+  assert.deepEqual(lacksOf('http', mc, { command: 'docker', args: ['run', '-i', '--rm', 'ghcr.io/wyre-ai/mimecast-mcp:v1.3.6'],
+    env: { MIMECAST_CLIENT_ID: 'a' } }), { withArgs: ['-e', 'MCP_TRANSPORT=stdio'] }, 'and still told what it lacks, as 0.2.3 told it')
+})
+
+test('0.2.4: add writes an image as its page prints it, with no "different line", and replaces what 0.2.3 wrote without asking', async () => {
+  await withMarket(imageRoutes(), async (m, home) => {
+    put(join(home, '.claude.json'), { mcpServers: WROTE_023 })
+    const r = await run(m.host, home, ['add', 'grafana', 'memory', 'mimecast', 'served'], { noKey: true })
+    assert.equal(r.code, 0, r.err)
+    const s = servers(home)
+    assert.deepEqual(s.grafana, { command: 'docker', args: ['run', '-i', '--rm', '-e', 'GRAFANA_URL', 'docker.io/grafana/mcp-grafana:1.6.1', '-t', 'stdio'],
+      env: { GRAFANA_URL: '<your value>' } })
+    assert.deepEqual(s.memory, { command: 'docker', args: ['run', '-i', '--rm', '--platform', 'linux/amd64', '-v', 'ai-memory-data:/data',
+      'ghcr.io/alphaonedev/ai-memory:0.5.1', '--db', '/data/ai-memory.db', 'mcp'] })
+    assert.deepEqual(s.mimecast, { command: 'docker', args: ['run', '-i', '--rm', '-e', 'MCP_TRANSPORT=stdio', '-e', 'MIMECAST_CLIENT_ID', '-e', 'MIMECAST_CLIENT_SECRET',
+      'ghcr.io/wyre-ai/mimecast-mcp:v1.3.6'], env: { MIMECAST_CLIENT_ID: '<your value>', MIMECAST_CLIENT_SECRET: '<your value>' } })
+    assert.deepEqual(s.served, { type: 'http', url: 'http://localhost:8080/mcp' })
+    assert.ok(!/different line/.test(r.out + r.err), 'the entry is the line the page prints')
+    assert.ok(!/left alone|--force/.test(r.out + r.err), 'nothing refused as the person\'s')
+    assert.equal((r.out.match(/entry replaced/g) || []).length, 3)
+    assert.match(r.out, /may need AI_MEMORY_DB — not marked as required, so it is not in the entry or passed to the container; to set one, add -e NAME before the image in its args and give it a value under env in .*\.claude\.json — an -e with no value set clears the default the image sets/)
+    assert.match(r.out, /may need MIMECAST_REGION, LOG_LEVEL — none is marked as required/)
+    assert.match(r.out, /may need LOG_LEVEL — not marked as required, so it is not in the entry or passed to the container; to set one, add -e NAME before the image in the line you start it with, and set it in that terminal/)
+
+    /* a copy of 0.2.3's with a value of the person's is theirs: kept, and told what it passes unset */
+    put(join(home, '.claude.json'), { mcpServers: { grafana: { ...WROTE_023.grafana, env: { GRAFANA_URL: 'https://g.example.com', GRAFANA_ORG_ID: '2' } } } })
+    const k = await run(m.host, home, ['add', 'grafana'], { noKey: true })
+    assert.equal(k.code, 0, k.err)
+    assert.deepEqual(servers(home).grafana.args, WROTE_023.grafana.args, 'left as it is')
+    assert.match(k.out, /= Grafana — already in the file, with values of yours — left as it is/)
+    assert.match(k.out, /your entry passes GRAFANA_SERVICE_ACCOUNT_TOKEN into the container with no value of yours set for it, and an unset -e clears any default the image sets: take -e GRAFANA_SERVICE_ACCOUNT_TOKEN out of its args in .*\.claude\.json, or give it a value under env/)
+    assert.ok(!/may need/.test(k.out), 'GRAFANA_ORG_ID is set, and the other is named once')
+    const j = await run(m.host, home, ['add', 'grafana', '--json'], { noKey: true })
+    const d = j.json().direct[0]
+    assert.equal(d.kept, true)
+    assert.deepEqual(d.passesUnset, ['GRAFANA_SERVICE_ACCOUNT_TOKEN'])
+
+    /* today's ai-memory entry has no -e at all: a value of theirs under env keeps it, and it is not
+       said to pass anything unset */
+    put(join(home, '.claude.json'), { mcpServers: { memory: { ...s.memory, env: { OTHER: '1' } } } })
+    const t = await run(m.host, home, ['add', 'memory', '--json'], { noKey: true })
+    const e = t.json().direct[0]
+    assert.equal(e.kept, true)
+    assert.equal(e.passesUnset, undefined)
+    assert.deepEqual(e.mayNeed, ['AI_MEMORY_DB'])
   })
 })

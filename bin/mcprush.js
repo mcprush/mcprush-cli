@@ -735,14 +735,19 @@ function settleDirect(item, needs, client, clientId, bucket) {
         const unset = (v) => typeof theirs[v] !== 'string' || !theirs[v] || theirs[v] === ENV_PLACEHOLDER
         const { needs: _n, mayNeed: _m, ...rest } = base
         const stillNeeds = started.local ? [] : need.filter(unset)
-        const stillMay = may.filter((v) => !Object.hasOwn(theirs, v))
         /* their copy of what an earlier version wrote, without something the server needs: kept, and told */
         const lacks = lacksOf(client.shape, started, there)
+        /* their copy of an image's entry up to 0.2.3, which passes every declared name with `-e`: an
+           optional one with no value of theirs under env reaches docker unset, and the daemon
+           takes the image's own value of it away — named, and left to them */
+        const clears = lacks && lacks.clears ? lacks.clears.filter(unset) : []
+        const stillMay = may.filter((v) => !Object.hasOwn(theirs, v) && !clears.includes(v))
         return {
           ...rest, ...(stillNeeds.length ? { needs: stillNeeds } : {}), ...(stillMay.length ? { mayNeed: stillMay } : {}),
           ...(lacks && lacks.withArgs ? { missingWith: lacks.withArgs } : {}),
           ...(lacks && lacks.runArgs ? { missingArgs: lacks.runArgs } : {}),
           ...(lacks && lacks.stdio ? { overStdio: true } : {}),
+          ...(clears.length ? { passesUnset: clears } : {}),
           written: false, kept: true,
           why: Object.keys(theirs).length
             ? 'already in the file, with values of yours — left as it is'
@@ -796,11 +801,25 @@ function directLines(d, file, pad) {
   if (d.fill && !d.kept && !d.local) {
     say(`${pad}put your own value in place of ${list(d.fill)} in ${file}: the entry holds ${it(d.fill)} as written until you do`)
   }
+  if (d.passesUnset) {
+    say(`${pad}your entry passes ${list(d.passesUnset)} into the container with no value of yours set for ${it(d.passesUnset)}, `
+      + `and an unset -e clears any default the image sets: take ${d.passesUnset.map((k) => '-e ' + safe(k)).join(', ')} `
+      + `out of its args in ${file}, or give ${it(d.passesUnset)} a value under env`)
+  }
   if (d.mayNeed) {
     /* "not marked as required" is true of a bare name and of { required: false } alike —
        the form the marketplace sends since the audit — where "does not say" was not */
-    say(dim(`${pad}may need ${list(d.mayNeed)} — ${d.mayNeed.length === 1 ? 'not marked as required, so it is not' : 'none is marked as required, so none is'} `
-      + `in the entry; add any the server asks for under env in ${file}`))
+    const none = d.mayNeed.length === 1 ? 'not marked as required, so it is not' : 'none is marked as required, so none is'
+    /* AN IMAGE IS PASSED ONLY ITS REQUIRED NAMES (procOf): a value under env alone never reaches
+       the container, and an `-e NAME` with nothing set for it would clear the image's own
+       default. So to set an optional one, both go in — as the page says it (optSay in app.js).
+       A server started by hand takes it on the line it is started with, from that terminal. */
+    const image = d.started && (d.started.command === 'docker' || (d.started.serve && d.started.serve.command === 'docker'))
+    say(dim(`${pad}may need ${list(d.mayNeed)} — ${none} ${image ? 'in the entry or passed to the container' : 'in the entry'}; `
+      + (!image ? `add any the server asks for under env in ${file}`
+        : d.local ? 'to set one, add -e NAME before the image in the line you start it with, and set it in that terminal'
+          : `to set one, add -e NAME before the image in its args and give it a value under env in ${file} — `
+            + 'an -e with no value set clears the default the image sets')))
   }
   if (d.launcherEnv) {
     say(dim(`${pad}declares ${list(d.launcherEnv)}, which steer${d.launcherEnv.length === 1 ? 's' : ''} the launcher or the process `
