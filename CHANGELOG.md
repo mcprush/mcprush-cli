@@ -4,6 +4,25 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions
 follow [semver](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] — 2026-10-02
+
+Two small corrections.
+
+### Fixed
+- **`remove a b` no longer drops `b` without a word.** It took the first
+  server out and ignored every other name, so a person believed both were
+  gone. `remove` works on one server per call — the account, the file and
+  `--json`'s one answer are all about one listing — so a second name is now
+  refused before anything is touched, with the commands to run one by one.
+  The same name given twice is still one server.
+
+### Changed
+- **The "not a server" reason names what such packages are.** A listing
+  mcprush.com marks as not a server is now described as "a tool around MCP
+  servers (a scanner, a generator, a test runner or an installer)", the words
+  its page uses, instead of "a bridge…" — supergateway, the bridge that line
+  was written for, has had a start line of its own since 30 Sep 2026.
+
 ## [0.2.4] — 2026-09-30
 
 A docker image's entry passed `-e NAME` for every variable the listing declares,

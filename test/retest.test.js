@@ -254,7 +254,7 @@ test('I07: a package that serves HTTP is written as its local address, with the 
 /* ---- I06, I10 ------------------------------------------------------------------------------- */
 
 test('I06/I10: a tool around servers is not written, an address that dies on start says so, and a step before the first start is printed', async () => {
-  assert.match(directStart(DIRECT.bridge).why, /a tool around MCP servers \(a bridge, a test runner or an installer\), not a server a client starts/)
+  assert.match(directStart(DIRECT.bridge).why, /a tool around MCP servers \(a scanner, a generator, a test runner or an installer\), not a server a client starts/)
   assert.match(directStart(DIRECT.dies).why, /the server behind its address stops with an error as soon as it starts/)
   assert.ok(!/does not answer/.test(directStart(DIRECT.dies).why))
   assert.equal(directStart(DIRECT.gmail).runFirst, 'npx -y @klodr/gmail-mcp auth')

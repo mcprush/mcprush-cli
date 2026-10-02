@@ -1916,6 +1916,14 @@ async function remove() {
      "no key held" sends the person to the dashboard for an error about no key at all */
   const name = typeof args._[1] === 'string' ? tidyName(args._[1]) : ''
   if (!name) throw new Refused(`Which server? \`${NPX} remove <server>\``)
+  /* ONE SERVER PER CALL, SAID OUT LOUD. \`remove a b\` took \`a\` out and dropped \`b\` without a word,
+     so the person believed both were gone. Every step below (the account, the file, --json's one
+     answer) is about one listing; a second name is refused before anything is touched. */
+  const more = args._.slice(2).filter((n) => typeof n === 'string' && n.length).map(tidyName).filter((n) => n && n !== name)
+  if (more.length) {
+    throw new Refused(`\`remove\` takes one server at a time, and nothing was changed. Run it once per server: `
+      + [name, ...more].map((n) => `\`${NPX} remove ${n}\``).join(', then ') + '.')
+  }
   const clientId = await resolveClient()
   /* the key is asked for below, once the listing is named: the entry of a server the client starts
      itself is taken out without one, as `add` wrote it without one */

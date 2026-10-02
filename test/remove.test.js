@@ -307,3 +307,26 @@ test('remove asks for the key its entry was written under exactly, so a name oth
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('0.2.5: a second name is refused before anything is touched, instead of being dropped without a word', async () => {
+  const home = scratch('mcprush-rm-')
+  const before = seed(home, {
+    first: gw('https://mcprush.com', 'first'),
+    second: gw('https://mcprush.com', 'second'),
+  })
+  const m = await marketplace(routes(null, () => ({ ok: true, uninstalled: true })))
+  try {
+    const r = await run(m.host, home, ['remove', 'first', 'second'])
+    assert.equal(r.code, 1)
+    assert.match(r.err, /`remove` takes one server at a time, and nothing was changed/)
+    assert.match(r.err, /remove first`, then `npx mcprush@latest remove second`/)
+    assert.equal(readFileSync(join(home, '.claude.json'), 'utf8'), before, 'the file is byte-identical')
+    assert.equal(m.seen.length, 0, 'the marketplace was not asked anything')
+    /* the same name twice is one server, not two */
+    const same = await run(m.host, home, ['remove', 'first', 'first', '--dry-run'])
+    assert.ok(!/one server at a time/.test(same.err), 'a repeated name is not a second server')
+  } finally {
+    await m.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
