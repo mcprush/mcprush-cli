@@ -15,7 +15,7 @@ import {
   CLIENTS, clientOf, canonicalClient, KNOWN_CLIENTS, entryFor, readClientFile, updateClientFile,
   atPath, skillDirFor, ensureInputs, checkInputs, dropUnusedInput, insideDir, realInside, scrubLiteralKey, checkedUrl, safeFolder,
   safeEntryKey, ownEntry, checkWritable, directStart, directEntryFor, directEntryOurs, legacyEntriesFor, entryLine, sameLaunch,
-  ENV_PLACEHOLDER, BRIDGE_SPEC, shq, sourceEnv, sourceGone, lacksOf, startLineOf,
+  ENV_PLACEHOLDER, BRIDGE_SPEC, shq, sourceEnv, sourceGone, lacksOf, startLineOf, guideOf, guideFromWords,
   printable, workspaceNote, legacyNote, NO_SKILL_FOLDER, LIVE_SKILLS, heldKey, putKey, targetsOf, FILED_AS,
 } from '../lib/config.js'
 import { api, skillFile, skillBundle, skillZip, Refused, parseRef } from '../lib/api.js'
@@ -827,6 +827,14 @@ function directLines(d, file, pad) {
   }
 }
 
+/* A SERVER INSTALLED THE WAY ITS AUTHOR DOCUMENTS (guideOf in lib/config.js): its steps, numbered
+   as its page numbers them, each on a line of its own and not dimmed — each is a line to paste —
+   then the link to the author's guide. Shared by `add` and `stack add`, which print the page. */
+function guideLines(g, pad) {
+  g.steps.forEach((s, i) => say(`${pad}${i + 1}. ${said(s)}`))
+  if (g.url) say(`${pad}the guide: ${said(g.url)}`)
+}
+
 /* One client's own form of an entry, to paste: its lines, the PowerShell line beside them on
    Windows (never in their place), and what it does. The execution-policy sentence is said once a
    command, beside the first line that starts an npm wrapper. */
@@ -966,6 +974,8 @@ async function add() {
   const done = []
   /* the servers the client starts itself, or dials at their publisher's address (settleDirect) */
   const direct = []
+  /* the servers installed the way their author documents: nothing is written for them (guideOf) */
+  const guided = []
   const failed = []
   const resolved = new Set()
   /* the line under a tick for a name that was not a key (foundBy), by the row it belongs to */
@@ -998,6 +1008,29 @@ async function add() {
       if (runsHere || listing.delivery === 'direct') {
         /* a paid one is bought first, as `stack add` skips a paid direct member ("buy it in the browser") */
         if (listing.free === false && !listing.installed) throw paidRefusal(listing)
+        /* THE AUTHOR'S OWN WAY (guideOf): the marketplace sends no line for such a server, only
+           the author's steps and link. Nothing went wrong, so it is no refusal — "there is no line
+           to start it" and exit 1 was 0.2.5's answer — and nothing is written: the steps are the
+           answer. `how` is the same guide in one sentence, read where `guide` is missing. */
+        const guide = guideOf(listing.guide) || guideFromWords(listing.how)
+        if (guide) {
+          const gid = String(listing.id ?? '')
+          const gk = safeEntryKey(gid)
+          if (resolved.has(gk || gid)) continue
+          resolved.add(gk || gid)
+          /* an entry already under its name — written from the line the page printed before the
+             author's steps, or the person's own — is left as it is, and named with its file */
+          const holder = gk ? files.find((f) => f.t && f.bucket && Object.hasOwn(f.bucket, gk)) : null
+          const g = {
+            id: gid, ...(ref ? { ref } : {}), name: String(listing.name ?? gid),
+            steps: guide.steps, url: guide.url,
+            page: typeof listing.page === 'string' && listing.page ? listing.page : null,
+            ...(holder ? { inFile: holder.t.file } : {}),
+          }
+          guided.push(g)
+          if (note) found.set(g, note)
+          continue
+        }
         /* written the way `stack add` writes a direct member: no install on the account, no key */
         const d = settleDirect({
           id: String(listing.id ?? ''), name: String(listing.name ?? listing.id ?? ''), source: src,
@@ -1086,14 +1119,30 @@ async function add() {
     if (d.page) say(dim(`${pad}${safe(d.page)}`))
   }
   const handWhy = `${clientId} is set up by hand, so nothing was written: paste it into ${clientId} yourself`
+  /* a server installed the way its author documents: no tick, since nothing was written — its
+     steps, its link and its page, whichever client the command was for */
+  const guidedSay = (g, head, pad) => {
+    say(`${head}${bold(safe(g.name) || safe(g.id))}${refShown(g)} — install it the way its author documents:`)
+    if (found.has(g)) say(dim(`${pad}${safe(found.get(g))}`))
+    guideLines(g, pad)
+    say(dim(`${pad}nothing was written${client ? ` to ${client.name}` : ''} and nothing was installed on the account: `
+      + 'there is no one line that starts it'))
+    if (g.inFile) {
+      say(dim(`${pad}an entry under its name is already in ${safe(g.inFile)}, left as it is — one written before `
+        + 'these steps were published may not start it'))
+    }
+    if (g.page) say(dim(`${pad}${safe(g.page)}`))
+  }
+  const guidedOut = guided.length ? { guided } : {}
 
   /* Before the "client we do not write" branch, which knows nothing of DRY and would install. */
   if (!client && DRY) {
     emit({ ok: !failed.length && !direct.length, dryRun: true, client: clientId, wrote: null, installed: done,
-      ...(direct.length ? { direct: direct.map(directOut), why: handWhy } : {}), failed }, () => {
+      ...(direct.length ? { direct: direct.map(directOut), why: handWhy } : {}), ...guidedOut, failed }, () => {
       say(dim('nothing was written and nothing was installed — this is what would happen:'))
       for (const d of done) say(`  ${d.id} → ${d.url} (pasted into ${clientId} by hand)`)
       for (const d of direct) handDirect(d, '  ')
+      for (const g of guided) guidedSay(g, '  ', '    ')
       for (const f of failed) complain(f.name, f)
     })
     if (failed.length || direct.length) process.exitCode = 1
@@ -1114,6 +1163,7 @@ async function add() {
           ...(form ? { setup: { code: form.code, how: form.how, ...(form.powershell ? { powershell: form.powershell } : {}) } } : {}) }
       }),
       ...(direct.length ? { direct: direct.map(directOut), why: handWhy } : {}),
+      ...guidedOut,
       failed,
     }, () => {
       for (const d of done) {
@@ -1145,9 +1195,11 @@ async function add() {
         }
       }
       for (const d of direct) handDirect(d, '  ')
+      for (const g of guided) guidedSay(g, '', '  ')
       for (const f of failed) complain(f.name, f)
     })
-    /* a direct server for a client set up by hand is not in it until it is pasted (as `stack add`) */
+    /* a direct server for a client set up by hand is not in it until it is pasted (as `stack add`);
+       one installed the way its author documents has nothing to paste, and is no failure */
     if (failed.length || direct.length) process.exitCode = 1
     return
   }
@@ -1156,19 +1208,23 @@ async function add() {
   if (DRY) {
     const also = copies.map((c) => c.t.file)
     emit({ ok: !failed.length, dryRun: true, file: client.file, ...(also.length ? { also } : {}), unreadable, installed: done,
-      ...(direct.length ? { direct: direct.map(directOut) } : {}), failed }, () => {
+      ...(direct.length ? { direct: direct.map(directOut) } : {}), ...guidedOut, failed }, () => {
       say(dim('nothing was written — this is what would be:'))
-      say(`  ${client.file}`)
-      if (unreadable) say(red('  and it would not be, as things stand: ') + String(unreadable).split('\n')[0])
-      for (const c of copies) {
-        say(`  ${c.t.file}`)
-        if (c.unreadable) say(red('  and it would not be, as things stand: ') + String(c.unreadable).split('\n')[0])
+      /* the files are named when something would go into them: not for a run of guides alone */
+      if (!guided.length || done.length || direct.length) {
+        say(`  ${client.file}`)
+        if (unreadable) say(red('  and it would not be, as things stand: ') + String(unreadable).split('\n')[0])
+        for (const c of copies) {
+          say(`  ${c.t.file}`)
+          if (c.unreadable) say(red('  and it would not be, as things stand: ') + String(c.unreadable).split('\n')[0])
+        }
       }
       for (const d of done) say(`  ${d.id} → ${safe(d.url)}${d.forced ? '  (--force: replaces an entry this tool did not write)' : ''}`)
       for (const d of direct) {
         say(`  ${d.key} → ${said(d.line)}${d.kept ? `  (${safe(d.why)})` : ''}`)
         directLines(d, client.file, '    ')
       }
+      for (const g of guided) guidedSay(g, '  ', '    ')
       for (const f of failed) complain(f.name, f)
     })
     if (failed.length) process.exitCode = 1
@@ -1215,6 +1271,7 @@ async function add() {
     if (typeof args.flags[f] === 'string') ignoredFlags.push({ flag: f, value: args.flags[f], why: 'this tool has no such setting' })
   }
   const one = single && direct.length ? direct[0] : null
+  const oneGuided = single && guided.length ? guided[0] : null
   emit({
     ok: !failed.length,
     /* one name — the old shape of the reply, which scripts and scripts/check-cli.mjs read */
@@ -1225,11 +1282,16 @@ async function add() {
     ...(one
       ? { id: one.key, ...(one.ref ? { ref: one.ref } : {}), start: one.local ? one.serve : one.line, replaced: !!one.replaced, ...(one.needs ? { needs: one.needs } : {}) }
       : {}),
+    /* and for a server installed the way its author documents, the steps and the link, with no start */
+    ...(oneGuided
+      ? { id: oneGuided.id, ...(oneGuided.ref ? { ref: oneGuided.ref } : {}), guide: { url: oneGuided.url, steps: oneGuided.steps } }
+      : {}),
     client: clientId,
     wrote: file,
     ...(also.length ? { alsoWrote: also } : {}),
     installed: done,
     ...(direct.length ? { direct: direct.map(directOut) } : {}),
+    ...guidedOut,
     failed,
     ...(ignoredFlags.length ? { ignored: ignoredFlags } : {}),
   }, () => {
@@ -1301,6 +1363,9 @@ async function add() {
       say(dim(`  ${swapped} entr${swapped === 1 ? 'y' : 'ies'} in this file held your key in plain text; `
         + 'they now ask VS Code for it instead'))
     }
+    /* after the file and what it asks for, so that "restart the client" is read as being about
+       the entries written, and not about a server for which nothing was */
+    for (const g of guided) guidedSay(g, '', '  ')
   })
   if (failed.length) process.exitCode = 1
 }
@@ -1418,12 +1483,32 @@ async function stack() {
     conflicts.push({ id: safeEntryKey(a.id), why: 'an entry you wrote is under this name; the install this run made is on your account' })
     return false
   })
+  /* THE MEMBERS INSTALLED THE WAY THEIR AUTHOR DOCUMENTS (guideOf). The route skips such a member
+     with the author's steps and link in one sentence for its reason, and puts it in no other list;
+     0.2.5 printed that sentence on one line among the other skipped members. It is read back into
+     its steps here (guideFromWords) — or taken as `guide` where the marketplace sends one, in
+     `skipped` or in `direct` — and the member is told in its own section. Nothing is written for
+     it, and the rest of the stack goes in as before. */
+  const guided = []
+  const guidedIds = new Set()
+  const takeGuide = (x, g) => {
+    const id = String(x.id ?? '')
+    if (!g || guidedIds.has(id)) return
+    guidedIds.add(id)
+    guided.push({ id, name: String(x.name ?? id), steps: g.steps, url: g.url,
+      page: typeof x.page === 'string' && x.page ? x.page : null })
+  }
+  for (const sk of res.skipped) {
+    if (sk && typeof sk === 'object' && sk.kind !== 'skill') takeGuide(sk, guideOf(sk.guide) || guideFromWords(sk.why))
+  }
+  const sentDirect = (Array.isArray(res.direct) ? res.direct : []).filter((d) => d && typeof d === 'object')
+  for (const d of sentDirect) takeGuide(d, guideOf(d.guide))
   /* The members the client starts itself. A marketplace older than this field sends none,
      and then this is the empty list and nothing below says a word about it. Each one is
      settled here — entry built, or the reason it was not — before anything is written, so
      the file is still written once, whole, or not at all. */
-  const direct = (Array.isArray(res.direct) ? res.direct : [])
-    .filter((d) => d && typeof d === 'object')
+  const direct = sentDirect
+    .filter((d) => !guidedIds.has(String(d.id ?? '')))
     .map((d) => {
       const item = {
         id: String(d.id ?? ''),
@@ -1479,9 +1564,10 @@ async function stack() {
      at /acme/key-vault — so it is never one of these, and the reason has to say a key is needed,
      not merely contain the word. */
   const directNamed = new Set(direct.map((d) => d.id))
-  const needKey = key() ? [] : skippedOnly0.filter((sk) => sk && !directNamed.has(String(sk.id))
+  /* nor is a member installed the way its author documents: its steps may well say "key" */
+  const needKey = key() ? [] : skippedOnly0.filter((sk) => sk && !directNamed.has(String(sk.id)) && !guidedIds.has(String(sk.id))
     && (sk.needsKey === true || /\bneeds? a key\b|\bkey from your account\b/i.test(String(sk.why || ''))))
-  if (needKey.length && !toWrite.length && !kept.length && !byHand.length && !skills.length) {
+  if (needKey.length && !toWrite.length && !kept.length && !byHand.length && !skills.length && !guided.length) {
     throw Object.assign(keyMissing(), { where: res.page || host() + '/stack/' + encodeURIComponent(name) })
   }
 
@@ -1513,7 +1599,8 @@ async function stack() {
   const directIds = new Set(direct.map((d) => d.id))
   const heldIds = new Set(held.map((h) => h.id))
   const conflictIds = new Set(conflicts.map((c) => c.id))
-  const skippedOnly = skippedOnly0.filter((sk) => !(sk && (directIds.has(String(sk.id)) || heldIds.has(String(sk.id)) || conflictIds.has(String(sk.id)))))
+  const skippedOnly = skippedOnly0.filter((sk) => !(sk && (directIds.has(String(sk.id)) || heldIds.has(String(sk.id))
+    || conflictIds.has(String(sk.id)) || guidedIds.has(String(sk.id)))))
   /* the gateway members, for a client that is set up by hand: its own form of each, as `add` prints it */
   const gatewaySetup = client ? [] : gateway.map((a) => {
     const url = checkedUrl(a.url)
@@ -1536,12 +1623,30 @@ async function stack() {
     direct: direct.map(({ key: _k, started: _s, ...d }) => d),
     ...(skills.length ? { skills } : {}),
     ...(needKey.length ? { needKey: needKey.map((sk) => String(sk.id)) } : {}),
+    /* the members installed the way their author documents, nothing written for them; they stay
+       in `skipped` too, as the marketplace sent them */
+    ...(guided.length ? { guided } : {}),
     conflicts,
     counts: {
       added: res.added.length, direct: direct.length, skipped: res.skipped.length,
       directWritten: toWrite.length, byHand: byHand.length,
+      ...(guided.length ? { guided: guided.length } : {}),
     },
   }, () => {
+    /* the members installed the way their author documents: each with its numbered steps, its
+       link and its page, in a section of their own — every client gets it, since nothing was
+       written for them in any */
+    const guidedSection = () => {
+      if (!guided.length) return
+      say('')
+      say(`  ${bold('Install the way the author documents')} — there is no one line that starts `
+        + `${guided.length === 1 ? 'this one' : 'these'}, so nothing was written for ${guided.length === 1 ? 'it' : 'them'}:`)
+      for (const g of guided) {
+        say(`  • ${bold(safe(g.name) || safe(g.id))}`)
+        guideLines(g, '      ')
+        if (g.page) say(dim(`      ${safe(g.page)}`))
+      }
+    }
     /* the tail every client gets: the skills with their command, what waits for a key */
     const tail = () => {
       if (skills.length) {
@@ -1601,6 +1706,7 @@ async function stack() {
       }
       for (const sk of skippedOnly) say(dim(`  · ${safe(sk.id)} — ${safe(sk.why)}`))
       if (skippedOnly.some((x) => String(x.why || '').startsWith('paid'))) say(dim('  ' + safe(res.page || '')))
+      guidedSection()
       tail()
       return
     }
@@ -1610,6 +1716,7 @@ async function stack() {
     if (toWrite.length) tally.push(`${toWrite.length} written from ${toWrite.length === 1 ? 'its' : 'their'} own source`)
     if (kept.length) tally.push(`${kept.length} already in the file`)
     if (byHand.length) tally.push(`${byHand.length} to set up by hand`)
+    if (guided.length) tally.push(`${guided.length} to install the way ${guided.length === 1 ? 'its author documents' : 'their authors document'}`)
     if (conflicts.length) tally.push(`${conflicts.length} left alone`)
     say(green('✓') + ` ${bold(safe(res.name) || safe(name))} — ${tally.join(', ')}`)
     for (const a of gateway) say(dim('  + ' + safe(a.id)))
@@ -1653,6 +1760,7 @@ async function stack() {
         if (d.page) say(dim(`      ${safe(d.page)}`))
       }
     }
+    guidedSection()
     if (conflicts.length) {
       say('')
       say(`  ${bold('Left alone')} — an entry you wrote is under the same name in ${client.file}:`)

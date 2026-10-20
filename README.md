@@ -81,7 +81,12 @@ process itself — `PATH`, `HOME`, `NODE_OPTIONS`, `DOCKER_*`, `NPM_CONFIG_*`,
 are installed and written as `add` does. A member it
 cannot write — a package that declares no program, a repository with no
 package, a client this tool does not write — is printed with its start line or
-the reason there is none, and its page, so you can set it up by hand.
+the reason there is none, and its page, so you can set it up by hand. A server
+whose author documents an install of their own — a `pipx install`, a setup
+command, a log-out and back in — has no one line to write: `add` and `stack add`
+write nothing for it and print the author's steps, numbered, with the link to
+the author's guide and its page. That is not an error: `add` exits 0, and the
+rest of a stack goes in as before.
 
 ## What it does not do
 
@@ -146,7 +151,7 @@ keeps no copy.
 | | |
 |---|---|
 | `mcprush login` | hold a key: asked for without echo, or piped in (`printf %s "$MCPRUSH_KEY" \| npx mcprush@latest login`) — with no terminal the first line of stdin is the key, and a stdin that sends nothing for 5 seconds is given up on; it is checked before it is stored, and `--dry-run` checks without storing. `login <key>` works but leaves the key in shell history. A login without `--host` drops a host an earlier `--host` pinned |
-| `mcprush add <server> [<server> …]` | install and write the client entry; the name is the page's `<publisher>/<name>`, and a bare name works only while one publisher uses it — when more than one does, nothing is installed and the candidates are listed (`candidates` under `--json`) to be named in full. The tick says whose listing went in: `✓ Chrome DevTools (chromedevtools/chrome-devtools-mcp) → Claude Code`. A server behind the gateway is installed on the account; one the client starts itself, or dials at its publisher's address, is written as the entry its page prints, with no key and nothing on the account. A paid one stops with its price and the checkout link |
+| `mcprush add <server> [<server> …]` | install and write the client entry; the name is the page's `<publisher>/<name>`, and a bare name works only while one publisher uses it — when more than one does, nothing is installed and the candidates are listed (`candidates` under `--json`) to be named in full. The tick says whose listing went in: `✓ Chrome DevTools (chromedevtools/chrome-devtools-mcp) → Claude Code`. A server behind the gateway is installed on the account; one the client starts itself, or dials at its publisher's address, is written as the entry its page prints, with no key and nothing on the account. One installed the way its author documents is printed with the author's numbered steps and link, and nothing is written for it. A paid one stops with its price and the checkout link |
 | `mcprush remove <server>` | take it off the account and out of the client, by either spelling; only an entry this tool wrote — or the one it writes for a direct server, which needs no key — unless `--force`. An install holding variables you set is taken off only with a write key — a read-only key is refused and the file is left as it was |
 | `mcprush skill add <skill>` | write a skill's folder to disk, fetched in one request (the marketplace's `bundle.tar.gz`; file by file only when that fails); a folder you changed is replaced only with `--force`. For Claude Desktop, ChatGPT, Copilot and Perplexity, save the zip that client uploads instead |
 | `mcprush skill remove <skill>` | delete what `skill add` wrote and keep what you added; no key needed |
@@ -304,7 +309,7 @@ No dependencies and no build step: the files in `bin/` and `lib/` are what
 ships.
 
 ```sh
-npm test                 # 171 tests, node:test, no runner to install
+npm test                 # 184 tests, node:test, no runner to install
 npm pack --dry-run       # what would go to the registry
 node bin/mcprush.js --help
 ```

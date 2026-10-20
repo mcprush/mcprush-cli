@@ -4,6 +4,39 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions
 follow [semver](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] — 2026-10-20
+
+A server whose author documents an install of their own is now given that
+install. Since 20 Oct 2026 mcprush.com lets an author put their own steps and a
+link in place of the line the page generates — Deskwright installs with `pipx
+install --system-site-packages deskwright`, then `deskwright-setup`, then a
+log-out, and the `uvx deskwright` line built for it could not reach the system
+PyGObject it needs. Such a listing carries no start line any more, only the
+steps and the link, and 0.2.5 answered `add` with "there is no line to start
+it" and exit 1, and printed a stack member's steps run together on one line.
+
+### Added
+- **`add` prints the author's steps and writes nothing.** For a server whose
+  listing carries a guide, `add` prints the steps numbered, one to a line as
+  they are to be pasted, then the link to the author's guide and the page. It
+  writes nothing to the client's config, installs nothing on the account, and
+  exits 0: nothing went wrong. Beside other names the rest are installed as
+  before. An entry already under its name — one written from the line the page
+  printed before — is left as it is, and named. `--json` carries `guided`
+  (`id`, `name`, `steps`, `url`, `page`) and, for one name, `guide`.
+- **`stack add` gives such a member a section of its own.** It is skipped with
+  its numbered steps, link and page under "Install the way the author
+  documents", counted in the tally, and the rest of the stack is written as
+  before. `--json` carries `guided` and `counts.guided`; `skipped` is still
+  what the marketplace sent. A guided member is never taken for one that waits
+  for a key, so a stack of those and gateway members, run without a key, still
+  prints the steps.
+- **What is printed is what is pasted.** Escape sequences, control characters,
+  direction marks and zero-width characters are taken out of a step, and a link
+  is printed only when it is https.
+
+A listing without a guide is answered exactly as before.
+
 ## [0.2.5] — 2026-10-02
 
 Two small corrections.
