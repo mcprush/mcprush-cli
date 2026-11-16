@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url'
 import { readdirSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, statSync, utimesSync, realpathSync } from 'node:fs'
 import { marketplace, run, scratch, status, server, installed, CLIENT_ROWS } from './harness.js'
 import { directStart, directEntryFor, ownEntry, printable, pasteHint, CLIENTS, readClientFile, sourceEnv, launcherEnv, BRIDGE_SPEC,
-  CONNECTOR_WHY, directEntryOurs, publisherBridge, bridgedTo } from '../lib/config.js'
+  CONNECTOR_WHY, directEntryOurs, publisherBridge, bridgedTo, ownAddress } from '../lib/config.js'
 import { parseRef, reachFailure } from '../lib/api.js'
 import { parse, unknownFlags } from '../lib/args.js'
 
@@ -1054,6 +1054,29 @@ test('CVE-2026-51994: the bridge an earlier version wrote for a publisher\'s add
   assert.equal(bridgedTo({ command: 'uvx', args: ['mcp-remote', 'https://x'] }), null, 'npx only')
 })
 
+test('CVE-2026-51994: a bridge to the reader\'s own machine or network is not a publisher\'s', () => {
+  for (const own of [
+    'http://localhost:8082/mcp', 'http://127.0.0.1:8082/sse', 'http://127.4.5.6/mcp', 'http://[::1]:9000/mcp',
+    'http://0.0.0.0:8000/mcp', 'http://10.0.0.5:8080/mcp', 'https://10.255.1.2/mcp', 'http://192.168.1.20:3000/sse',
+    'http://172.16.0.1/mcp', 'http://172.20.4.4:8000/mcp', 'http://172.31.255.254/mcp', 'http://app.localhost:3000/mcp',
+    'http://printer.local/mcp', 'https://mcp.corp.internal/mcp', 'http://NAS.LAN:8080/mcp',
+  ]) {
+    assert.equal(publisherBridge(OLD_BRIDGE(own)), null, own)
+    assert.equal(publisherBridge(OLD_BRIDGE(own, ['--transport', 'sse-only'])), null, own + ', SSE')
+  }
+  for (const theirs of [
+    'https://172.15.0.1/mcp', 'https://172.32.0.1/mcp', 'https://11.0.0.1/mcp', 'https://192.169.0.1/mcp',
+    'https://localhost.example.com/mcp', 'https://mcp.local.example.com/mcp', 'https://internal.example.org/mcp',
+    'https://lan.example.net/sse', 'https://128.0.0.1/mcp',
+  ]) {
+    assert.equal(publisherBridge(OLD_BRIDGE(theirs)), theirs, theirs)
+  }
+  assert.equal(ownAddress('[::1]'), true)
+  assert.equal(ownAddress('::1'), true)
+  assert.equal(ownAddress(''), false)
+  assert.equal(ownAddress('mcp.example.com'), false)
+})
+
 test('CVE-2026-51994: add gives Claude Desktop a publisher\'s address as a custom connector, takes out the bridge an earlier version wrote, and names the others', async () => {
   const remote = (id, value, transport = 'streamable-http') => server('', id, {
     ready: false, delivery: 'direct', start: value, page: `https://mcprush.com/pub/${id}`, url: null,
@@ -1074,6 +1097,9 @@ test('CVE-2026-51994: add gives Claude Desktop a publisher\'s address as a custo
       mine1: HAND,
       other: OLD_BRIDGE('https://other.example.net/mcp'),
       github: bridge(`${m.host}/gw/github/mcp`),
+      /* the reader's own network: a server they run, never named as a publisher's */
+      nas: OLD_BRIDGE('http://192.168.1.20:8080/mcp'),
+      lab: OLD_BRIDGE('https://mcp.corp.internal/sse', ['--transport', 'sse-only']),
     } }, null, 2))
 
     /* --dry-run: what would come out, nothing touched */
@@ -1098,6 +1124,8 @@ test('CVE-2026-51994: add gives Claude Desktop a publisher\'s address as a custo
     assert.equal(servers.remote1, undefined, 'taken out')
     assert.deepEqual(servers.other, OLD_BRIDGE('https://other.example.net/mcp'), 'named, not touched')
     assert.deepEqual(servers.github, bridge(`${m.host}/gw/github/mcp`), 'the gateway bridge stays')
+    assert.deepEqual(servers.nas, OLD_BRIDGE('http://192.168.1.20:8080/mcp'), 'an address on the reader\'s network stays')
+    assert.ok(!/nas|lab/.test(r.out), 'and is not named')
     assert.match(readFileSync(file + '.bak', 'utf8'), /mcp-remote@0\.1\.38", "https:\/\/mcp\.example\.com\/mcp"|"https:\/\/mcp\.example\.com\/mcp"/, 'the old entry is in the .bak')
     assert.ok(readFileSync(file + '.bak', 'utf8').includes('remote1'))
 

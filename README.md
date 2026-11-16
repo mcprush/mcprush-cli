@@ -255,7 +255,10 @@ Anthropic's cloud, so the address has to be reachable from the internet. The
 bridge an earlier version wrote for that server is taken out on the same run,
 and kept in the `.bak`; an entry of yours under its name is left as it is.
 Every other entry in the file that starts mcp-remote towards a publisher's
-address is named, never touched. The bridge stays for the gateway, which
+address is named, never touched; an address on your own machine or network —
+loopback, `0.0.0.0`, 10/8, 172.16/12, 192.168/16, or a name ending in
+`.localhost`, `.local`, `.internal` or `.lan` — is not a publisher's, and is not
+named. The bridge stays for the gateway, which
 answers with its own 401 and never passes a publisher's on, and for a server on
 your own machine — a package that serves HTTP locally — which a connector could
 not reach.
@@ -333,7 +336,7 @@ No dependencies and no build step: the files in `bin/` and `lib/` are what
 ships.
 
 ```sh
-npm test                 # 187 tests, node:test, no runner to install
+npm test                 # 188 tests, node:test, no runner to install
 npm pack --dry-run       # what would go to the registry
 node bin/mcprush.js --help
 ```

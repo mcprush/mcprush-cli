@@ -41,6 +41,11 @@ the pin stays and the bridge goes wherever the address is somebody else's.
   every other entry in its file that starts mcp-remote towards a publisher's
   address is named, with what to do about it; none is touched. `--json` carries
   them as `bridged` (`key`, `address`).
+- **A private address is yours, not a publisher's.** A bridge to an address on
+  your own machine or network — loopback, `0.0.0.0`, 10/8, 172.16/12,
+  192.168/16, or a name ending in `.localhost`, `.local`, `.internal` or `.lan`
+  — is a server you run, the same hosts mcprush.com prints the bridge for, and
+  is not named among the others.
 
 ### Unchanged
 - The bridge stays for the gateway, which answers with its own 401 and never
