@@ -24,8 +24,9 @@ Worth knowing before you read the code:
   without `--force`.
 - **It writes commands your client will run.** `stack add` writes a direct
   member as the command that starts it — `npx -y <package>`, `uvx <package>`,
-  `docker run -i --rm <image>` — and Claude Desktop's entries start
-  `npx -y mcp-remote@0.1.38`. The client executes them on its next start; this
+  `docker run -i --rm <image>` — and Claude Desktop's entries for the gateway
+  and for a server on this machine start `npx -y mcp-remote@0.1.38`. The
+  client executes them on its next start; this
   tool does not. A package name is held to its registry's grammar (no URL, git,
   `file:` or `user/repo` spec), a variable that steers the launcher (`PATH`,
   `HOME`, `NODE_OPTIONS`, `DOCKER_*`, `NPM_CONFIG_*`, `UV_*`, `PIP_*`, …) is
@@ -35,6 +36,17 @@ Worth knowing before you read the code:
   the key in its `env`. The version is pinned — 0.1.38, past CVE-2025-6514 and
   from before the package changed maintainers — so a new release is not run
   with your key until this tool is released with it.
+- **It writes no bridge to a publisher's address.** mcp-remote follows the
+  `resource_metadata` URL a server names in its `WWW-Authenticate` header
+  without restricting where it points (CVE-2026-51994; every release, 0.1.38
+  and 0.16.6 included), so the server behind a publisher's address could make
+  your machine fetch any address on your network. Since 0.2.7 such a server is
+  printed as a custom connector for Claude Desktop, and as its address and the
+  reason for Codex and Grok Build on SSE. The bridge an earlier version wrote
+  for it is taken out on the next `add` or `stack add` (the old file stays in
+  the `.bak`), and any other bridge to a publisher's address in Claude
+  Desktop's file is named. The gateway's bridge stays: the gateway builds its
+  own 401 and never passes a publisher's `WWW-Authenticate` on.
 - **It downloads text.** `skill add` fetches the files of a skill your account
   holds and writes them to disk — in one request, as the marketplace's
   `bundle.tar.gz`, which this tool unpacks itself (no `tar` binary is run):

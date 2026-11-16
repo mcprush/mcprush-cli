@@ -4,6 +4,50 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions
 follow [semver](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] — 2026-11-16
+
+No mcp-remote bridge to a publisher's address (CVE-2026-51994, reported by
+Boundary Security). mcp-remote follows the `resource_metadata` URL a server
+names in its `WWW-Authenticate` header without restricting where it points,
+so the server behind a publisher's address could make your machine fetch any
+address on its network. 0.1.38, the version this tool pins, is affected, and
+no release of mcp-remote restricts it — 0.16.6 fetches it the same way — so
+the pin stays and the bridge goes wherever the address is somebody else's.
+
+### Security
+- **Claude Desktop gets a publisher's address as a custom connector.** `add`
+  and `stack add` no longer write `npx -y mcp-remote@0.1.38 <address>` for a
+  direct server at its publisher's address. They print the address and how to
+  add it in Claude Desktop itself, as Anthropic's help describes it today:
+  Customize → Connectors, Add, then Add custom connector, with a name and the
+  address; one custom connector on the Free plan; on a Team or Enterprise plan
+  an Owner adds it under Organization settings → Connectors. An SSE server is
+  told how its transport is picked. Nothing is written for it, and `add` exits
+  0: the line to paste is the answer. `--json` carries `connector` (and, for one
+  name, `start`: the address) with `written: false`; `stack add` lists such
+  members under "Add as a custom connector" and counts them in
+  `counts.connector`.
+- **Codex and Grok Build on a publisher's SSE address get no line.** Both dial
+  an address over Streamable HTTP only, and the line they were given was the
+  bridge; now the address and the reason are printed.
+- **The bridge an earlier version wrote is taken out.** A re-run of `add` or
+  `stack add` for the same server takes out the entry 0.2.0–0.2.6 wrote for it
+  — `npx -y mcp-remote@0.1.38 <address>`, with `--transport sse-only` or
+  without, pinned or not, and 0.1.4's `{ type, url }` — keeping the old file in
+  the `.bak`, and prints the connector line. An entry you wrote under the name
+  is left as it is, and said. `remove` takes the old bridge out without
+  `--force`, as it did.
+- **The others are named.** After `add` or `stack add` for Claude Desktop,
+  every other entry in its file that starts mcp-remote towards a publisher's
+  address is named, with what to do about it; none is touched. `--json` carries
+  them as `bridged` (`key`, `address`).
+
+### Unchanged
+- The bridge stays for the gateway, which answers with its own 401 and never
+  passes a publisher's challenge on, and for a server on this machine (a
+  package that serves HTTP locally), which a connector, connecting from
+  Anthropic's cloud, could not reach. The pin is still 0.1.38.
+
 ## [0.2.6] — 2026-10-20
 
 A server whose author documents an install of their own is now given that

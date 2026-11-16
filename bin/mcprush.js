@@ -16,6 +16,7 @@ import {
   atPath, skillDirFor, ensureInputs, checkInputs, dropUnusedInput, insideDir, realInside, scrubLiteralKey, checkedUrl, safeFolder,
   safeEntryKey, ownEntry, checkWritable, directStart, directEntryFor, directEntryOurs, legacyEntriesFor, entryLine, sameLaunch,
   ENV_PLACEHOLDER, BRIDGE_SPEC, shq, sourceEnv, sourceGone, lacksOf, startLineOf, guideOf, guideFromWords,
+  CONNECTOR_STEPS, CONNECTOR_NOTES, connectorSse, bridgedTo, publisherBridge,
   printable, workspaceNote, legacyNote, NO_SKILL_FOLDER, LIVE_SKILLS, heldKey, putKey, targetsOf, FILED_AS,
 } from '../lib/config.js'
 import { api, skillFile, skillBundle, skillZip, Refused, parseRef } from '../lib/api.js'
@@ -722,6 +723,17 @@ function settleDirect(item, needs, client, clientId, bucket) {
     return { ...item, key: k, started, ...told, written: false, why: `${clientId} is set up by hand`, setup: directSetupFor(clientId, k, started) }
   }
   const entry = directEntryFor(client.shape, started)
+  /* CLAUDE DESKTOP AND A PUBLISHER'S ADDRESS (0.2.7, CVE-2026-51994): no entry — the address, for a
+     custom connector set up in Claude Desktop itself. The bridge an earlier version wrote under the
+     name (`npx -y mcp-remote@0.1.38 <address>`, 0.2.0–0.2.6; directEntryOurs knows its forms), or a
+     gateway entry of ours, is taken out on this run, with a .bak; an entry of the person's is named
+     and left alone. Not a failure: the line to paste is the answer, as an author's own steps are. */
+  if (entry.why) {
+    const there = bucket && Object.hasOwn(bucket, k) ? bucket[k] : undefined
+    const ours = there !== undefined && (ownEntry(there) || directEntryOurs(client.shape, started, there))
+    return { ...item, key: k, started, ...told, written: false, connector: entry.connector, why: entry.why,
+      ...(ours ? { drop: true, old: entryLine(there) } : there !== undefined ? { leftAlone: true } : {}) }
+  }
   const base = { ...item, key: k, line: entryLine(entry), started, ...told }
   /* A direct entry is ours to replace only when it is the one this run would write, one an
      earlier version wrote for the same member (directEntryOurs), or a gateway entry of ours. One
@@ -825,6 +837,44 @@ function directLines(d, file, pad) {
     say(dim(`${pad}declares ${list(d.launcherEnv)}, which steer${d.launcherEnv.length === 1 ? 's' : ''} the launcher or the process `
       + `itself — not written; set ${it(d.launcherEnv)} only if you know why`))
   }
+}
+
+/* A DIRECT SERVER AT ITS PUBLISHER'S ADDRESS, FOR CLAUDE DESKTOP (0.2.7, CVE-2026-51994): no entry,
+   the address for a custom connector and how to add it, in Anthropic's own words (CONNECTOR_STEPS),
+   and what became of an entry an earlier version wrote under its name. `dry` for --dry-run. */
+function connectorLines(d, pad, dry) {
+  say(`${pad}${CONNECTOR_STEPS}`)
+  say(`${pad}  ${said(d.connector)}`)
+  if (d.fill) say(`${pad}put your own value in place of ${d.fill.map(safe).join(', ')} in that address first`)
+  const sse = connectorSse(d.started)
+  if (sse) say(dim(`${pad}${sse}`))
+  say(dim(`${pad}${CONNECTOR_NOTES}`))
+  if (d.drop) {
+    say(dim(dry
+      ? `${pad}the entry an earlier version wrote for it would be taken out: ${said(d.old)}`
+      : d.dropped
+        ? `${pad}the entry an earlier version wrote for it was taken out (the old one is in the .bak): ${said(d.old)}`
+        : `${pad}the entry under its name changed while this ran, so it was left as it is`))
+  }
+  if (d.leftAlone) {
+    say(dim(`${pad}an entry you wrote is under its name in the config and was left as it is: take it out by hand once the connector works`))
+  }
+  directLines(d, null, pad)
+}
+
+/* THE OTHER mcp-remote ENTRIES TOWARDS A PUBLISHER'S ADDRESS in Claude Desktop's file — what 0.2.0–0.2.6
+   wrote for a direct member, or one written by hand the same way (publisherBridge): named after a write
+   there, never touched, since this run was not asked about them. `skip` holds the names this run handled. */
+function bridgesIn(bucket, skip) {
+  if (!bucket || typeof bucket !== 'object') return []
+  return Object.entries(bucket).filter(([k, e]) => !skip.has(k) && publisherBridge(e))
+    .map(([k, e]) => ({ key: k, address: publisherBridge(e) }))
+}
+function bridgesNote(left, file, pad) {
+  if (!left.length) return
+  say(dim(`${pad}note: ${file} still starts mcp-remote towards a publisher's address for ${left.map((b) => safe(b.key)).join(', ')}, `
+    + 'and mcp-remote follows any sign-in address such a server names (CVE-2026-51994): add each as a custom connector '
+    + `instead and take its entry out — for a server from ${host()}, \`${NPX} add <server> --client claude-desktop\` does both`))
 }
 
 /* A SERVER INSTALLED THE WAY ITS AUTHOR DOCUMENTS (guideOf in lib/config.js): its steps, numbered
@@ -1041,7 +1091,7 @@ async function add() {
         }, listing.needs, client, clientId, bucket)
         if (d.key && resolved.has(d.key)) continue
         if (d.conflict) throw new Refused(foreign(client, d.key, 'Nothing was written for it.'))
-        if (!d.written && !d.kept && !d.setup) throw directRefused(listing, src, d)
+        if (!d.written && !d.kept && !d.setup && !d.connector) throw directRefused(listing, src, d)
         resolved.add(d.key)
         direct.push(d)
         if (note) found.set(d, note)
@@ -1205,13 +1255,22 @@ async function add() {
   }
 
   const toWrite = direct.filter((d) => d.written)
+  /* a publisher's address for Claude Desktop: a connector, and the bridge an earlier version wrote taken out */
+  const connectors = direct.filter((d) => d.connector)
+  const toDrop = connectors.filter((d) => d.drop)
+  /* and the other bridges to a publisher's address in Claude Desktop's file: named, not touched */
+  const leftBridges = client.shape === 'desktop'
+    ? bridgesIn(bucket, new Set([...done.map((d) => d.id), ...direct.map((d) => d.key)])) : []
   if (DRY) {
     const also = copies.map((c) => c.t.file)
     emit({ ok: !failed.length, dryRun: true, file: client.file, ...(also.length ? { also } : {}), unreadable, installed: done,
-      ...(direct.length ? { direct: direct.map(directOut) } : {}), ...guidedOut, failed }, () => {
+      ...(direct.length ? { direct: direct.map(directOut) } : {}), ...guidedOut, failed,
+      ...(leftBridges.length ? { bridged: leftBridges } : {}) }, () => {
       say(dim('nothing was written — this is what would be:'))
-      /* the files are named when something would go into them: not for a run of guides alone */
-      if (!guided.length || done.length || direct.length) {
+      /* the files are named when something would go into them: not for a run of guides alone, nor of
+         connectors with nothing to take out */
+      const onlyConnectors = connectors.length > 0 && connectors.length === direct.length && !done.length && !toDrop.length
+      if ((!guided.length && !onlyConnectors) || done.length || direct.length - connectors.length + toDrop.length > 0) {
         say(`  ${client.file}`)
         if (unreadable) say(red('  and it would not be, as things stand: ') + String(unreadable).split('\n')[0])
         for (const c of copies) {
@@ -1221,10 +1280,16 @@ async function add() {
       }
       for (const d of done) say(`  ${d.id} → ${safe(d.url)}${d.forced ? '  (--force: replaces an entry this tool did not write)' : ''}`)
       for (const d of direct) {
+        if (d.connector) {
+          say(`  ${d.key} — not written: ${safe(d.why)}`)
+          connectorLines(d, '    ', true)
+          continue
+        }
         say(`  ${d.key} → ${said(d.line)}${d.kept ? `  (${safe(d.why)})` : ''}`)
         directLines(d, client.file, '    ')
       }
       for (const g of guided) guidedSay(g, '  ', '    ')
+      bridgesNote(leftBridges, client.file, '  ')
       for (const f of failed) complain(f.name, f)
     })
     if (failed.length) process.exitCode = 1
@@ -1239,7 +1304,7 @@ async function add() {
   let also = []
   let swapped = 0
   let notes = null
-  if (done.length || toWrite.length || swappedBefore) {
+  if (done.length || toWrite.length || swappedBefore || toDrop.length) {
     ({ file, also, swapped, notes } = writeEntries(client, (bucket, t, first) => {
       /* what was there before this write, not after the first entry of it went in */
       const before = { ...bucket }
@@ -1260,10 +1325,19 @@ async function add() {
         if (first) d.replaced = Object.hasOwn(before, d.key)
         bucket[d.key] = d.entry
       }
+      /* read again on the bytes that are written, in every file of the client: an entry the person
+         rewrote in between is theirs now, and stays */
+      for (const d of connectors) {
+        const there = before[d.key]
+        if (there === undefined || !(ownEntry(there) || directEntryOurs(t.shape, d.started, there))) continue
+        delete bucket[d.key]
+        if (first) d.dropped = true
+      }
     /* the undo advice names what THIS run put on the account: a row the account already
        held (unchanged) is not something a failed write should tell the person to remove */
     }, done.filter((d) => !d.unchanged)))
   }
+
   const ignoredFlags = []
   if (planAsked) ignoredFlags.push({ flag: 'plan', value: planAsked, why: 'a plan is chosen at checkout' })
   if (versionAsked) ignoredFlags.push({ flag: 'version', value: versionAsked, why: 'an install follows the release the publisher serves' })
@@ -1280,7 +1354,8 @@ async function add() {
       : {}),
     /* and for a direct server, the line it starts with and what it needs, as its refusal carried them */
     ...(one
-      ? { id: one.key, ...(one.ref ? { ref: one.ref } : {}), start: one.local ? one.serve : one.line, replaced: !!one.replaced, ...(one.needs ? { needs: one.needs } : {}) }
+      ? { id: one.key, ...(one.ref ? { ref: one.ref } : {}), start: one.connector || (one.local ? one.serve : one.line), replaced: !!one.replaced,
+        ...(one.needs ? { needs: one.needs } : {}), ...(one.connector ? { connector: one.connector } : {}) }
       : {}),
     /* and for a server installed the way its author documents, the steps and the link, with no start */
     ...(oneGuided
@@ -1294,6 +1369,7 @@ async function add() {
     ...guidedOut,
     failed,
     ...(ignoredFlags.length ? { ignored: ignoredFlags } : {}),
+    ...(leftBridges.length ? { bridged: leftBridges } : {}),
   }, () => {
     for (const d of done) {
       say(green('✓') + ` ${bold(safe(d.name))}${refShown(d)} → ${client.name}`)
@@ -1317,6 +1393,14 @@ async function add() {
     /* A direct server: its line is printed beside the entry — it is somebody else's package, and
        the person restarting the client should have seen what it will run. */
     for (const d of direct) {
+      /* Claude Desktop and a publisher's address: no entry, the address for a custom connector (0.2.7) */
+      if (d.connector) {
+        say(`= ${bold(safe(d.name) || safe(d.key))}${refShown(d)} — not written to ${client.name}: add it as a custom connector`)
+        if (found.has(d)) say(dim(`  ${safe(found.get(d))}`))
+        connectorLines(d, '  ', false)
+        if (d.page) say(dim(`  ${safe(d.page)}`))
+        continue
+      }
       /* an address is dialled, a command (Claude Desktop's bridge to that address included) is started */
       const how = /^[a-z][a-z0-9+.-]*:\/\//i.test(d.line || '') ? 'it connects to' : 'it starts with'
       if (d.kept) {
@@ -1337,11 +1421,16 @@ async function add() {
     if (file) {
       say(dim(`  ${file}`))
       for (const f of also) say(dim(`  ${f}  (the Microsoft Store build reads this one)`))
+      /* the bridge sentence only where this run wrote a bridge: the gateway, or a server on this machine */
+      const bridgeWritten = done.length > 0 || toWrite.some((d) => !!bridgedTo(d.entry))
       say(dim(client.shape === 'desktop'
-        ? `  Claude Desktop starts it through \`npx ${BRIDGE_SPEC}\`, so Node.js has to be installed; quit and reopen it to pick it up`
+        ? bridgeWritten
+          ? `  Claude Desktop starts it through \`npx ${BRIDGE_SPEC}\`, so Node.js has to be installed; quit and reopen it to pick it up`
+          : '  quit and reopen Claude Desktop to pick it up'
         : '  restart the client to pick it up'))
     }
     for (const n of notes || []) say(dim(`  ${n}`))
+    bridgesNote(leftBridges, file || client.file, '  ')
     const ws = file ? workspaceNote(client) : null
     if (ws) say(dim(`  note: ${ws}`))
     const legacy = file ? legacyNote(client) : null
@@ -1524,7 +1613,11 @@ async function stack() {
     })
   const toWrite = direct.filter((d) => d.written)
   const kept = direct.filter((d) => d.kept)
-  const byHand = direct.filter((d) => !d.written && !d.kept && !d.conflict)
+  /* a member at its publisher's address, for Claude Desktop: a custom connector, and the bridge an
+     earlier version wrote for it taken out (0.2.7, CVE-2026-51994) */
+  const connectors = direct.filter((d) => d.connector)
+  const toDrop = connectors.filter((d) => d.drop)
+  const byHand = direct.filter((d) => !d.written && !d.kept && !d.conflict && !d.connector)
 
   /* THE SKILLS OF A STACK ARE NAMED WITH THEIR COMMAND. They were skipped as "a skill — read by
      your client, not routed", and the person was left to find each one. A skill is a folder this
@@ -1567,14 +1660,14 @@ async function stack() {
   /* nor is a member installed the way its author documents: its steps may well say "key" */
   const needKey = key() ? [] : skippedOnly0.filter((sk) => sk && !directNamed.has(String(sk.id)) && !guidedIds.has(String(sk.id))
     && (sk.needsKey === true || /\bneeds? a key\b|\bkey from your account\b/i.test(String(sk.why || ''))))
-  if (needKey.length && !toWrite.length && !kept.length && !byHand.length && !skills.length && !guided.length) {
+  if (needKey.length && !toWrite.length && !kept.length && !byHand.length && !connectors.length && !skills.length && !guided.length) {
     throw Object.assign(keyMissing(), { where: res.page || host() + '/stack/' + encodeURIComponent(name) })
   }
 
   let wrote = null
   let also = []
   let notes = null
-  if (client && (gateway.length || toWrite.length)) {
+  if (client && (gateway.length || toWrite.length || toDrop.length)) {
     ({ file: wrote, also, notes } = writeEntries(client, (bucket, t, first) => {
       const before = { ...bucket }
       for (const a of gateway) {
@@ -1590,9 +1683,19 @@ async function stack() {
         if (first) d.replaced = Object.hasOwn(before, d.key)
         bucket[d.key] = d.entry
       }
+      /* read again on the bytes that are written: an entry the person rewrote in between stays */
+      for (const d of connectors) {
+        const there = before[d.key]
+        if (there === undefined || !(ownEntry(there) || directEntryOurs(t.shape, d.started, there))) continue
+        delete bucket[d.key]
+        if (first) d.dropped = true
+      }
     /* only this run's new installs: a held member was on the account before the command */
     }, res.added))
   }
+  /* the other bridges to a publisher's address in Claude Desktop's file: named, not touched */
+  const leftBridges = client && client.shape === 'desktop'
+    ? bridgesIn(bucket, new Set([...everyGateway.map((a) => safeEntryKey(a.id)), ...direct.map((d) => d.key || d.id)])) : []
 
   /* `skipped` still carries every direct member, as the server sends it for the 0.1.3
      reader; here they are told once, in their own section, so the id is not listed twice. */
@@ -1627,10 +1730,12 @@ async function stack() {
        in `skipped` too, as the marketplace sent them */
     ...(guided.length ? { guided } : {}),
     conflicts,
+    ...(leftBridges.length ? { bridged: leftBridges } : {}),
     counts: {
       added: res.added.length, direct: direct.length, skipped: res.skipped.length,
       directWritten: toWrite.length, byHand: byHand.length,
       ...(guided.length ? { guided: guided.length } : {}),
+      ...(connectors.length ? { connector: connectors.length } : {}),
     },
   }, () => {
     /* the members installed the way their author documents: each with its numbered steps, its
@@ -1716,6 +1821,7 @@ async function stack() {
     if (toWrite.length) tally.push(`${toWrite.length} written from ${toWrite.length === 1 ? 'its' : 'their'} own source`)
     if (kept.length) tally.push(`${kept.length} already in the file`)
     if (byHand.length) tally.push(`${byHand.length} to set up by hand`)
+    if (connectors.length) tally.push(`${connectors.length} to add as a custom connector`)
     if (guided.length) tally.push(`${guided.length} to install the way ${guided.length === 1 ? 'its author documents' : 'their authors document'}`)
     if (conflicts.length) tally.push(`${conflicts.length} left alone`)
     say(green('✓') + ` ${bold(safe(res.name) || safe(name))} — ${tally.join(', ')}`)
@@ -1740,9 +1846,13 @@ async function stack() {
     if (wrote) say(dim(`  ${wrote}`))
     for (const f of also) say(dim(`  ${f}  (the Microsoft Store build reads this one)`))
     for (const n of notes || []) say(dim(`  ${n}`))
+    /* the bridge sentence only where this run wrote a bridge: the gateway, or a server on this machine */
     if (wrote && client.shape === 'desktop') {
-      say(dim(`  Claude Desktop starts a remote one through \`npx ${BRIDGE_SPEC}\`, so Node.js has to be installed; quit and reopen it`))
+      say(dim(gateway.length || toWrite.some((d) => !!bridgedTo(d.entry))
+        ? `  Claude Desktop starts a remote one through \`npx ${BRIDGE_SPEC}\`, so Node.js has to be installed; quit and reopen it`
+        : '  quit and reopen Claude Desktop to pick it up'))
     }
+    bridgesNote(leftBridges, wrote || client.file, '  ')
     const ws = wrote ? workspaceNote(client) : null
     if (ws) say(dim(`  note: ${ws}`))
     const legacy = wrote ? legacyNote(client) : null
@@ -1757,6 +1867,16 @@ async function stack() {
            "no console script" beside none */
         if (d.start) say(`      ${said(d.start)}`)
         say(dim(`      ${safe(d.why)}`))
+        if (d.page) say(dim(`      ${safe(d.page)}`))
+      }
+    }
+    if (connectors.length) {
+      say('')
+      say(`  ${bold('Add as a custom connector')} — ${client.name} takes a publisher's address that way, not from its config `
+        + 'file, so nothing was written for these:')
+      for (const d of connectors) {
+        say(`  • ${bold(safe(d.name) || safe(d.id))}`)
+        connectorLines(d, '      ', false)
         if (d.page) say(dim(`      ${safe(d.page)}`))
       }
     }

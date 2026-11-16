@@ -316,13 +316,21 @@ test('review: the by-hand lines of the wrapper CLIs survive PowerShell — gemin
   /* a bare -- is dropped on its way into gemini.ps1, and Gemini CLI takes docker's -e and -t as its own */
   assert.equal(directSetupFor('gemini', 'grafana', grafana).code,
     "gemini mcp add --scope user -e 'GRAFANA_URL=$GRAFANA_URL' grafana docker '--' run -i --rm -e GRAFANA_URL docker.io/grafana/mcp-grafana:1.6.0 -t stdio")
-  /* Codex and Grok dial Streamable HTTP only: an SSE address goes in through mcp-remote, as the site prints it */
+  /* Codex and Grok dial Streamable HTTP only. A publisher's SSE address gets no bridge since 0.2.7
+     (CVE-2026-51994): no line, the address and the reason, as the site prints it */
   const sse = directStart({ kind: 'url', value: 'https://mcp.example.com/sse', transport: 'sse' })
-  assert.equal(directSetupFor('codex', 'r', sse).code, "codex mcp add r '--' npx -y mcp-remote@0.1.38 https://mcp.example.com/sse --transport sse-only")
-  assert.equal(directSetupFor('grok', 'r', sse).code, "grok mcp add r '--' npx -y mcp-remote@0.1.38 https://mcp.example.com/sse --transport sse-only")
-  assert.match(directSetupFor('codex', 'r', sse).how, /mcp-remote, a bridge/)
+  for (const [c, who] of [['codex', 'Codex'], ['grok', 'Grok Build']]) {
+    const f = directSetupFor(c, 'r', sse)
+    assert.equal(f.code, '', `${c}: no line`)
+    assert.ok(!/mcp-remote@/.test(JSON.stringify(f)), `${c}: no bridge`)
+    assert.match(f.how, new RegExp(`^It speaks SSE at https://mcp\\.example\\.com/sse, and ${who} connects to an address over Streamable HTTP only, so there is no entry that would connect\\.`))
+    assert.match(f.how, /CVE-2026-51994/)
+  }
+  /* a server on this machine keeps the bridge */
   const local = directStart({ kind: 'npm', value: 'b', transport: 'sse', localUrl: 'http://localhost:8082/sse' })
   assert.equal(directSetupFor('codex', 'b', local).code, "codex mcp add b '--' npx -y mcp-remote@0.1.38 http://localhost:8082/sse --transport sse-only")
+  assert.equal(directSetupFor('grok', 'b', local).code, "grok mcp add b '--' npx -y mcp-remote@0.1.38 http://localhost:8082/sse --transport sse-only")
+  assert.match(directSetupFor('codex', 'b', local).how, /mcp-remote, a bridge/)
   assert.equal(directSetupFor('codex', 'h', directStart({ kind: 'url', value: 'https://mcp.example.com/mcp' })).code,
     'codex mcp add h --url https://mcp.example.com/mcp', 'Streamable HTTP as before')
   /* formbro-mcp: through a .ps1 wrapper an unquoted a,b arrives as "a b" */

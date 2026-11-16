@@ -58,7 +58,9 @@ itself, with this marketplace nowhere in the path. `stack add` writes those
 into the client's config as the entry the listing page prints (`npx -y <pkg>`,
 `npx -y --package=<pkg> <program>`, `uvx <pkg>`, `docker run -i --rm <image>`,
 or the address with its transport), with no key of ours in them, and prints the
-line the client will run beside each one — read off the entry written. `add`
+line the client will run beside each one — read off the entry written. Claude
+Desktop is the exception for a publisher's address: it takes one as a custom
+connector, so the address is printed for that instead (see below). `add`
 does the same for a single direct server, so `npx mcprush@latest add <server>`
 works for the whole catalogue and not only for the servers behind the gateway:
 nothing is installed on the account, and no key is needed. Where the
@@ -221,8 +223,10 @@ line does not survive PowerShell — `--env K="$K"` for Codex, where `$K` is
 PowerShell's own empty variable, or the `curl` — a second line for PowerShell is
 printed after it on Windows (`--env K="$env:K"`, `Invoke-RestMethod`), and a
 bare `--` is written `'--'` for Grok and Gemini CLI, whose npm wrappers lose it
-in PowerShell. An SSE server goes into Codex and Grok Build through `mcp-remote`,
-since both dial an address over Streamable HTTP only.
+in PowerShell. An SSE server on your own machine goes into Codex and Grok Build
+through `mcp-remote`, since both dial an address over Streamable HTTP only; one
+at its publisher's address gets no line, only the address and the reason — the
+bridge is not written for anybody else's address (see Claude Desktop below).
 `--json` carries that form as `setup` (and `powershell`), beside the address and
 the header; `stack add` and `add-list` print the address beside each member.
 
@@ -235,8 +239,28 @@ in the entry's `env`. That process is handed your key, so its version is
 pinned: 0.1.38 is past the fix for CVE-2025-6514 and is the last release
 published by hand from its original repository, before the package changed
 maintainers. Node.js has to be installed for it; quit and reopen Claude
-Desktop to pick it up. A direct stack member with an address goes in the same
-way. On Windows, the build from the official installer (an MSIX package) reads
+Desktop to pick it up.
+
+**A server at its publisher's address gets no bridge (0.2.7).** mcp-remote
+follows the sign-in address a server names in its `WWW-Authenticate` header
+(`resource_metadata`) without checking where it leads, so the server behind a
+publisher's address could make your machine fetch any address on your network —
+CVE-2026-51994, and no release of mcp-remote restricts it. So `add` and `stack
+add` write nothing into Claude Desktop for such a server, and print its address
+for a custom connector, added in Claude Desktop itself: Customize → Connectors,
+Add, then Add custom connector, with a name and the address (one custom
+connector on the Free plan; on a Team or Enterprise plan an Owner adds it under
+Organization settings → Connectors). Claude connects to a connector from
+Anthropic's cloud, so the address has to be reachable from the internet. The
+bridge an earlier version wrote for that server is taken out on the same run,
+and kept in the `.bak`; an entry of yours under its name is left as it is.
+Every other entry in the file that starts mcp-remote towards a publisher's
+address is named, never touched. The bridge stays for the gateway, which
+answers with its own 401 and never passes a publisher's on, and for a server on
+your own machine — a package that serves HTTP locally — which a connector could
+not reach.
+
+On Windows, the build from the official installer (an MSIX package) reads
 `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json`
 rather than `%APPDATA%\Claude\claude_desktop_config.json`; when that file is
 there, every command writes, relinks and removes the entry in both.
@@ -309,7 +333,7 @@ No dependencies and no build step: the files in `bin/` and `lib/` are what
 ships.
 
 ```sh
-npm test                 # 184 tests, node:test, no runner to install
+npm test                 # 187 tests, node:test, no runner to install
 npm pack --dry-run       # what would go to the registry
 node bin/mcprush.js --help
 ```

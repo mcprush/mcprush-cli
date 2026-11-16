@@ -9,7 +9,8 @@ import { platform } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { readdirSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, statSync, utimesSync, realpathSync } from 'node:fs'
 import { marketplace, run, scratch, status, server, installed, CLIENT_ROWS } from './harness.js'
-import { directStart, directEntryFor, ownEntry, printable, pasteHint, CLIENTS, readClientFile, sourceEnv, launcherEnv, BRIDGE_SPEC } from '../lib/config.js'
+import { directStart, directEntryFor, ownEntry, printable, pasteHint, CLIENTS, readClientFile, sourceEnv, launcherEnv, BRIDGE_SPEC,
+  CONNECTOR_WHY, directEntryOurs, publisherBridge, bridgedTo } from '../lib/config.js'
 import { parseRef, reachFailure } from '../lib/api.js'
 import { parse, unknownFlags } from '../lib/args.js'
 
@@ -82,10 +83,14 @@ test('K1: the bridge is ours only towards a /gw/ address at our origin with the 
   assert.equal(ownEntry(bridge('https://mcprush.com/api/other')), false, 'our origin, but not the gateway')
   assert.equal(ownEntry({ command: 'npx', args: ['-y', 'some-server', 'https://mcprush.com/gw/x/mcp'], env: { MCPRUSH_AUTH: 'Bearer k' } }), false)
 
+  /* a publisher's address: no bridge since 0.2.7 (CVE-2026-51994) — the reason and the address, for a connector */
   assert.deepEqual(directEntryFor('desktop', { url: 'https://mcp.example.com/mcp', sse: false }),
-    { command: 'npx', args: ['-y', 'mcp-remote@0.1.38', 'https://mcp.example.com/mcp'] })
+    { why: CONNECTOR_WHY, connector: 'https://mcp.example.com/mcp' })
   assert.deepEqual(directEntryFor('desktop', { url: 'https://mcp.example.com/sse', sse: true }),
-    { command: 'npx', args: ['-y', 'mcp-remote@0.1.38', 'https://mcp.example.com/sse', '--transport', 'sse-only'] })
+    { why: CONNECTOR_WHY, connector: 'https://mcp.example.com/sse' })
+  /* a server on this machine keeps the bridge: a connector connects from Anthropic's cloud and cannot reach it */
+  assert.deepEqual(directEntryFor('desktop', { url: 'http://127.0.0.1:8082/sse', sse: true, local: true }),
+    { command: 'npx', args: ['-y', 'mcp-remote@0.1.38', 'http://127.0.0.1:8082/sse', '--transport', 'sse-only'] })
   assert.deepEqual(directEntryFor('desktop', { command: 'npx', args: ['-y', 'pkg'] }), { command: 'npx', args: ['-y', 'pkg'] })
   assert.match(pasteHint(CLIENTS.claude), /mcp-remote/)
 })
@@ -208,7 +213,13 @@ test('K1/K9: the entry 0.1.4 wrote for a direct member is rewritten without --fo
     assert.equal(d.json().ok, true)
     assert.deepEqual(d.json().conflicts, [])
     const servers = JSON.parse(readFileSync(file, 'utf8')).mcpServers
-    assert.deepEqual(servers.remote, { command: 'npx', args: ['-y', BRIDGE_SPEC, 'https://mcp.example.com/mcp'] })
+    /* a publisher's address: 0.1.4's entry is ours and taken out, and nothing is written in its place —
+       a custom connector instead (0.2.7, CVE-2026-51994) */
+    assert.equal(servers.remote, undefined)
+    const rj = d.json().direct.find((x) => x.id === 'remote')
+    assert.equal(rj.connector, 'https://mcp.example.com/mcp')
+    assert.equal(rj.dropped, true)
+    assert.equal(d.json().counts.connector, 1)
     assert.deepEqual(servers.boxed, { command: 'docker', args: ['run', '-i', '--rm', '-e', 'REGION', 'mcp/boxed'], env: { REGION: '<your value>' } })
     assert.deepEqual(servers.tok, { command: 'npx', args: ['-y', 'tok-mcp'], env: { TOK: '<your value>' } })
 
@@ -1013,5 +1024,145 @@ test('K23: skill add says when the marketplace hands out only part of the folder
   await withMarket(() => skills(cat, files), async (m, home) => {
     const r = await run(m.host, home, ['skill', 'add', 'acme/big', '--json'], { noKey: true })
     assert.equal(r.json().truncated, undefined, 'a whole folder says nothing')
+  })
+})
+
+/* ---- CVE-2026-51994 (0.2.7, reported by Boundary Security) ---------------------------------
+   mcp-remote follows the resource_metadata URL a server names in its WWW-Authenticate header
+   without restricting where it points, and no release restricts it. Claude Desktop is given no
+   bridge to a publisher's address any more: a custom connector, with the line to paste; the
+   bridge an earlier version wrote is taken out on the next run, and the others are named. */
+
+const OLD_BRIDGE = (url, extra = []) => ({ command: 'npx', args: ['-y', 'mcp-remote@0.1.38', url, ...extra] })
+
+test('CVE-2026-51994: the bridge an earlier version wrote for a publisher\'s address is ours, in every form; a gateway or this machine is no publisher', () => {
+  const http = directStart({ kind: 'url', value: 'https://mcp.example.com/mcp', transport: 'streamable-http' })
+  const sse = directStart({ kind: 'url', value: 'https://mcp.example.com/sse', transport: 'sse' })
+  assert.equal(directEntryOurs('desktop', http, OLD_BRIDGE('https://mcp.example.com/mcp')), true, '0.2.0–0.2.6, pinned')
+  assert.equal(directEntryOurs('desktop', sse, OLD_BRIDGE('https://mcp.example.com/sse', ['--transport', 'sse-only'])), true, 'pinned, SSE')
+  assert.equal(directEntryOurs('desktop', http, { command: 'npx', args: ['-y', 'mcp-remote', 'https://mcp.example.com/mcp'] }), true, 'unpinned')
+  assert.equal(directEntryOurs('desktop', http, { type: 'http', url: 'https://mcp.example.com/mcp' }), true, "0.1.4's form")
+  assert.equal(directEntryOurs('desktop', http, { ...OLD_BRIDGE('https://mcp.example.com/mcp'), env: { TOKEN: 'mine' } }), false, 'the person\'s, with values of theirs')
+  assert.equal(directEntryOurs('desktop', http, OLD_BRIDGE('https://elsewhere.example.com/mcp')), false, 'another address')
+
+  assert.equal(publisherBridge(OLD_BRIDGE('https://mcp.example.com/mcp')), 'https://mcp.example.com/mcp')
+  assert.equal(publisherBridge({ command: 'npx', args: ['-y', 'mcp-remote@0.1.20', 'https://x.example.org/sse', '--transport', 'sse-only'] }), 'https://x.example.org/sse')
+  assert.equal(publisherBridge(bridge('https://mcprush.com/gw/github/mcp')), null, 'our gateway')
+  assert.equal(publisherBridge(OLD_BRIDGE('http://127.0.0.1:8082/sse')), null, 'this machine')
+  assert.equal(publisherBridge(OLD_BRIDGE('http://localhost:8082/mcp')), null, 'this machine')
+  assert.equal(publisherBridge({ command: 'npx', args: ['-y', 'some-server', 'https://mcp.example.com/mcp'] }), null, 'no bridge')
+  assert.equal(bridgedTo({ command: 'uvx', args: ['mcp-remote', 'https://x'] }), null, 'npx only')
+})
+
+test('CVE-2026-51994: add gives Claude Desktop a publisher\'s address as a custom connector, takes out the bridge an earlier version wrote, and names the others', async () => {
+  const remote = (id, value, transport = 'streamable-http') => server('', id, {
+    ready: false, delivery: 'direct', start: value, page: `https://mcprush.com/pub/${id}`, url: null,
+    source: { kind: 'url', value, transport },
+  })
+  await withMarket((m) => routes(m.host, {
+    '/api/cli/listing/remote1': () => remote('remote1', 'https://mcp.example.com/mcp'),
+    '/api/cli/listing/sse1': () => remote('sse1', 'https://mcp.example.com/sse', 'sse'),
+    '/api/cli/listing/events1': () => remote('events1', 'https://mcp.example.com/events', 'sse'),
+    '/api/cli/listing/mine1': () => remote('mine1', 'https://mine.example.com/mcp'),
+  }), async (m, home) => {
+    const file = desktopFile(home)
+    mkdirSync(join(file, '..'), { recursive: true })
+    const HAND = { command: 'npx', args: ['-y', 'mcp-remote', 'https://mine.example.com/mcp', '--header', 'X-Key:${K}'], env: { K: 'mine' } }
+    writeFileSync(file, JSON.stringify({ mcpServers: {
+      remote1: OLD_BRIDGE('https://mcp.example.com/mcp'),
+      sse1: OLD_BRIDGE('https://mcp.example.com/sse', ['--transport', 'sse-only']),
+      mine1: HAND,
+      other: OLD_BRIDGE('https://other.example.net/mcp'),
+      github: bridge(`${m.host}/gw/github/mcp`),
+    } }, null, 2))
+
+    /* --dry-run: what would come out, nothing touched */
+    const before = readFileSync(file, 'utf8')
+    const dry = await run(m.host, home, ['add', 'remote1', '--client', 'claude-desktop', '--dry-run', '--json'])
+    assert.equal(dry.code, 0, dry.out)
+    assert.equal(dry.json().direct[0].connector, 'https://mcp.example.com/mcp')
+    assert.equal(dry.json().direct[0].drop, true)
+    assert.equal(readFileSync(file, 'utf8'), before, 'a dry run writes nothing')
+
+    const r = await run(m.host, home, ['add', 'remote1', '--client', 'claude-desktop'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /= Remote1 \(pub\/remote1\) — not written to Claude Desktop: add it as a custom connector\n/)
+    assert.match(r.out, /In Claude Desktop \(or on claude\.ai\): Customize → Connectors, Add, then Add custom connector; enter a name and this address, click Continue, then Add\.\n\s+https:\/\/mcp\.example\.com\/mcp\n/)
+    assert.match(r.out, /On the Free plan you can add one custom connector/)
+    assert.match(r.out, /the entry an earlier version wrote for it was taken out \(the old one is in the \.bak\): npx -y mcp-remote@0\.1\.38 https:\/\/mcp\.example\.com\/mcp/)
+    assert.match(r.out, /quit and reopen Claude Desktop to pick it up/)
+    assert.ok(!/starts it through `npx mcp-remote/.test(r.out), 'no bridge was written, so no bridge sentence')
+    /* the others: named, untouched */
+    assert.match(r.out, /note: .+claude_desktop_config\.json still starts mcp-remote towards a publisher's address for sse1, mine1, other, and mcp-remote follows any sign-in address such a server names \(CVE-2026-51994\)/)
+    let servers = JSON.parse(readFileSync(file, 'utf8')).mcpServers
+    assert.equal(servers.remote1, undefined, 'taken out')
+    assert.deepEqual(servers.other, OLD_BRIDGE('https://other.example.net/mcp'), 'named, not touched')
+    assert.deepEqual(servers.github, bridge(`${m.host}/gw/github/mcp`), 'the gateway bridge stays')
+    assert.match(readFileSync(file + '.bak', 'utf8'), /mcp-remote@0\.1\.38", "https:\/\/mcp\.example\.com\/mcp"|"https:\/\/mcp\.example\.com\/mcp"/, 'the old entry is in the .bak')
+    assert.ok(readFileSync(file + '.bak', 'utf8').includes('remote1'))
+
+    /* SSE: the flag the earlier entry carried is known; the transport said; --json carries the connector */
+    const s = await run(m.host, home, ['add', 'sse1', '--client', 'claude', '--json'])
+    assert.equal(s.code, 0, s.out)
+    const sj = s.json()
+    assert.equal(sj.ok, true)
+    assert.equal(sj.start, 'https://mcp.example.com/sse')
+    assert.equal(sj.connector, 'https://mcp.example.com/sse')
+    assert.equal(sj.direct[0].dropped, true)
+    assert.equal(sj.direct[0].written, false)
+    assert.match(sj.direct[0].why, /custom connector[\s\S]*CVE-2026-51994/)
+    assert.deepEqual(sj.bridged.map((b) => b.key), ['mine1', 'other'])
+    servers = JSON.parse(readFileSync(file, 'utf8')).mcpServers
+    assert.equal(servers.sse1, undefined)
+    const e = await run(m.host, home, ['add', 'events1', '--client', 'claude'])
+    assert.match(e.out, /It speaks SSE: set Advanced → Transport to SSE\./)
+    const s2 = await run(m.host, home, ['add', 'sse1', '--client', 'claude'])
+    assert.match(s2.out, /It speaks SSE, which an address ending in \/sse selects on its own\./)
+    assert.ok(!/taken out/.test(s2.out), 'nothing left to take out')
+
+    /* an entry of the person's under the name: left as it is, and said */
+    const h = await run(m.host, home, ['add', 'mine1', '--client', 'claude'])
+    assert.equal(h.code, 0, h.err)
+    assert.match(h.out, /an entry you wrote is under its name in the config and was left as it is/)
+    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).mcpServers.mine1, HAND)
+
+    /* `remove` takes out an earlier bridge of ours without --force, as `add` does */
+    const f = JSON.parse(readFileSync(file, 'utf8'))
+    f.mcpServers.remote1 = OLD_BRIDGE('https://mcp.example.com/mcp')
+    writeFileSync(file, JSON.stringify(f))
+    const rm = await run(m.host, home, ['remove', 'remote1', '--client', 'claude', '--json'])
+    assert.equal(rm.code, 0, rm.out)
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).mcpServers.remote1, undefined)
+    assert.equal(rm.json().forced, undefined)
+  })
+})
+
+test('CVE-2026-51994: stack add gives Claude Desktop its publisher-address members as custom connectors, and the rest as before', async () => {
+  const direct = [
+    { id: 'remote', name: 'Remote', start: 'https://mcp.example.com/mcp', page: 'https://mcprush.com/pub/remote',
+      source: { kind: 'url', value: 'https://mcp.example.com/mcp', transport: 'streamable-http' } },
+    { id: 'tok', name: 'Tok', start: 'npx -y tok-mcp', source: { kind: 'npm', value: 'tok-mcp' } },
+    { id: 'here', name: 'Here', start: 'npx -y here-mcp', source: { kind: 'npm', value: 'here-mcp', transport: 'sse', localUrl: 'http://localhost:8082/sse' } },
+  ]
+  const answer = { ok: true, stack: 's', name: 'S', added: [], skipped: [], direct, counts: { added: 0, direct: 3, skipped: 0 } }
+  await withMarket(answer, async (m, home) => {
+    const file = desktopFile(home)
+    mkdirSync(join(file, '..'), { recursive: true })
+    writeFileSync(file, JSON.stringify({ mcpServers: { remote: OLD_BRIDGE('https://mcp.example.com/mcp') } }))
+    const r = await run(m.host, home, ['stack', 'add', 's', '--client', 'claude'])
+    assert.equal(r.code, 0, r.err)
+    assert.match(r.out, /✓ S — 0 installed, 2 written from their own source, 1 to add as a custom connector\n/)
+    assert.match(r.out, /Add as a custom connector — Claude Desktop takes a publisher's address that way, not from its config file, so nothing was written for these:\n\s+• Remote\n\s+In Claude Desktop \(or on claude\.ai\): Customize → Connectors, Add, then Add custom connector/)
+    assert.match(r.out, /the entry an earlier version wrote for it was taken out \(the old one is in the \.bak\)/)
+    /* a server on this machine still goes in through the bridge, and the sentence says so */
+    assert.match(r.out, /Claude Desktop starts a remote one through `npx mcp-remote@0\.1\.38`/)
+    const servers = JSON.parse(readFileSync(file, 'utf8')).mcpServers
+    assert.equal(servers.remote, undefined)
+    assert.deepEqual(servers.tok, { command: 'npx', args: ['-y', 'tok-mcp'] })
+    assert.deepEqual(servers.here, { command: 'npx', args: ['-y', 'mcp-remote@0.1.38', 'http://localhost:8082/sse', '--transport', 'sse-only'] })
+    const j = await run(m.host, home, ['stack', 'add', 's', '--client', 'claude', '--json'])
+    assert.equal(j.json().counts.connector, 1)
+    assert.equal(j.json().direct.find((d) => d.id === 'remote').connector, 'https://mcp.example.com/mcp')
+    assert.equal(j.json().bridged, undefined, 'nothing else to name')
   })
 })

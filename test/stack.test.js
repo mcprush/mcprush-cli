@@ -321,8 +321,10 @@ test('a client this tool does not write gets no tick and exit 1, and every membe
     assert.match(r.out, /codex mcp add scoped-npm -- npx -y @scope\/pkg\n/)
     assert.match(r.out, /codex mcp add wingman -- uvx --from wingman-mcp wingman\n/)
     assert.match(r.out, /codex mcp add boxed -- docker run -i --rm ghcr\.io\/org\/image:1\.2\n/)
-    /* SSE through the bridge: Codex dials an address over Streamable HTTP only (as the site, I25) */
-    assert.match(r.out, /codex mcp add remote-sse '--' npx -y mcp-remote@0\.1\.38 https:\/\/mcp\.example\.com\/sse --transport sse-only\n/)
+    /* SSE at a publisher's address: Codex dials Streamable HTTP only, and the bridge is not written for
+       somebody else's address since 0.2.7 (CVE-2026-51994) — the address and the reason */
+    assert.ok(!/mcp-remote@/.test(r.out), 'no bridge line')
+    assert.match(r.out, /It speaks SSE at https:\/\/mcp\.example\.com\/sse, and Codex connects to an address over Streamable HTTP only, so there is no entry that would connect\./)
     assert.match(r.out, /codex mcp add grafana --env GRAFANA_URL="\$GRAFANA_URL" -- docker run -i --rm -e GRAFANA_URL docker\.io\/grafana\/mcp-grafana:1\.6\.0 -t stdio\n/)
     assert.match(r.out, /It takes GRAFANA_URL from your shell, so export it first\./)
     /* a member with no line keeps its reason */
